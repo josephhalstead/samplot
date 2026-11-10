@@ -7,7 +7,9 @@ Use from the command line (`samplot plot`, `samplot vcf`) or as a library:
                               bams=["sample.bam"], sv_type="DEL")
     fig.savefig("del.png")
 """
-__version__ = "1.4.0"
+# upstream (ryanlayer/samplot) has no 1.4.0: the +awgl local version marks
+# this fork so the installed build is identifiable (samplot --version)
+__version__ = "1.4.0+awgl"
 
 from .samplot import (
     PlotOptions,

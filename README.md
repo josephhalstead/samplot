@@ -1,4 +1,4 @@
-[![CircleCI](https://circleci.com/gh/ryanlayer/samplot/tree/master.svg?style=svg)](https://circleci.com/gh/ryanlayer/samplot/tree/master)
+[![tests](https://github.com/josephhalstead/samplot/actions/workflows/tests.yml/badge.svg)](https://github.com/josephhalstead/samplot/actions/workflows/tests.yml)
 [![install with bioconda](https://img.shields.io/badge/install%20with-bioconda-brightgreen.svg?style=flat)](http://bioconda.github.io/recipes/samplot/README.html)
 
 <center><img src="/doc/imgs/samplot_logo_v5.png" width="300"/></center>
@@ -333,7 +333,7 @@ curl http://hgdownload.soe.ucsc.edu/goldenPath/hg19/database/rmsk.txt.gz \
 tabix rmsk.bed.gz
 ```
 
-Plot:
+Pass the gene annotations with `-T` and any number of feature files with `-A`:
 ```
 samplot plot \
     -n NA12878 NA12889 NA12890 \
@@ -350,7 +350,22 @@ samplot plot \
     -A rmsk.bed.gz wgEncodeDukeMapabilityUniqueness35bp.bed.gz
 ```
 
-<img src="/doc/imgs/4_115928726_115931880.d100.genes_reps_map.png">
+The same thing can be tried without downloading anything, using the small
+annotation files in the test data (a region with no SV, so no `-t`):
+```
+samplot plot \
+    -n sample \
+    -b samplot/test/data/2_59305747-59505747_X_151018513-151218513.BND.bam \
+    -o X_151095000_151150000.genes_alu.png \
+    -c X \
+    -s 151095000 \
+    -e 151150000 \
+    -T samplot/test/data/Homo_sapiens.GRCh37.82.sort.2_X.gff3.gz \
+    -A samplot/test/data/Alu.2_X.bed.gz \
+    --annotation_scalar 1
+```
+
+<img src="/doc/imgs/X_151095000_151150000.genes_alu.png">
 
 ## Generating images from a VCF file
 To plot images from structural variant calls in a VCF file, use samplot's
@@ -516,7 +531,7 @@ the region that is given by `-c` `-s` and `-e` will be displayed.
 
 #### Long read (Oxford nanopore and PacBio) and linked read support
 Any alignment that is longer than 1000 bp is treated as a long read, and
-the plot design will focus on aligned regions and gaps. Aligned regions are in orange, and gaps follow the same DEL/DUP/INV color code used for short reads. The height of the alignment is based on the size of its largest gap.
+the plot design will focus on aligned regions and gaps. Aligned regions are in purple, and gaps follow the same DEL/DUP/INV color code used for short reads. The height of the alignment is based on the size of its largest gap.
 
 <img src="/doc/imgs/longread_del.png">
 
