@@ -148,7 +148,7 @@ options:
   --jitter [JITTER]     Add uniform random noise to insert sizes. This can be
                         helpful to resolve overlapping entries. Either a
                         custom value (<1.0) is supplied or 0.08 will be used.
-  --dpi DPI             Dots per inches (pixel count, default 300)
+  --dpi DPI             Dots per inches (pixel count) (default: 150)
   --annotation_scalar ANNOTATION_SCALAR
                         scaling factor for the optional annotation/trascript
                         tracks

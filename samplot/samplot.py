@@ -2646,7 +2646,7 @@ def add_plot(parent_parser):
     parser.add_argument(
         "--dpi",
         type=int,
-        help="Dots per inches (pixel count, default 300)",
+        help="Dots per inches (pixel count)",
         required=False,
     )
     parser.add_argument(
