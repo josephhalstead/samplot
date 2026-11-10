@@ -81,6 +81,16 @@ options:
   --max_coverage_points MAX_COVERAGE_POINTS
                         number of points to plot in coverage axis (the region
                         is averaged into this many bins)
+  --genes GENES         Draw a gene track. Give a genome build with a bundled
+                        MANE Select track (GRCh38) or the path of a tabix
+                        indexed file in the same format (see
+                        scripts/make_gene_track.py). Exons, coding regions and
+                        exon numbers are drawn on small plots and one bar per
+                        gene on large ones
+  --gene_detail_max_size GENE_DETAIL_MAX_SIZE
+                        The gene track shows exons when the plotted region is
+                        at most this many bases, and whole genes above it
+                        (default: 200000)
   --discordant_only_min_size DISCORDANT_ONLY_MIN_SIZE
                         When the plotted region is at least this many bases,
                         properly paired reads are only counted towards
@@ -204,6 +214,29 @@ All settings and their defaults are the fields of `samplot.PlotOptions`,
 which is also where the command line gets its defaults. If you want to build
 the options yourself, `samplot.create_figure(samplot.PlotOptions(...))` is
 what `plot_region` calls.
+
+## Gene track
+`--genes GRCh38` (`genes="GRCh38"` from Python) draws a gene track under the
+samples from a bundled file of GRCh38 MANE Select transcripts (RefSeq), so no
+annotation file is needed:
+```
+samplot plot -c chr17 -s 43090000 -e 43100000 -t DEL -b sample.cram -r GRCh38.fa --genes GRCh38
+```
+How much is drawn depends on the width of the plot. When the plotted region
+is at most `--gene_detail_max_size` bases (200kb by default) each transcript
+is drawn with its exons (thick where coding, thin for UTRs), the direction of
+transcription, its RefSeq accession and exon numbers. Wider plots draw one
+bar per gene with its symbol; genes are packed into rows so labels do not
+overlap, and in very gene dense regions the genes there is no room to label
+are drawn on a final row without names. The variant breakpoints are carried
+down through the track.
+
+The bundled track has one transcript per protein coding gene with a MANE
+Select transcript (about 19,300); non-coding genes and alternative
+transcripts are not in it. It is built by `scripts/make_gene_track.py`, and
+`--genes` also accepts the path of any tabix indexed file in the same format,
+for another build or transcript set. `-T/--transcript_file` (GFF3) still
+works as before and can be used alongside it.
 
 ## Coverage in wide regions and copy number variants
 Coverage is the mean depth in each of `--max_coverage_points` bins across the

@@ -1338,6 +1338,58 @@ class Test_options(unittest.TestCase):
         self.assertEqual(options.zoom, 500000)
 
 
+class Test_gene_track(unittest.TestCase):
+    def brca1(self):
+        path = samplot.get_gene_track_path('GRCh38')
+        ranges = [samplot.genome_interval('chr17', 43000000, 43180000)]
+        genes = samplot.get_genes(ranges, path)
+        return ranges, genes, [g for g in genes if g.symbol == 'BRCA1'][0]
+
+    def test_get_genes(self):
+        ranges, genes, brca1 = self.brca1()
+        self.assertEqual(brca1.transcript.split('.')[0], 'NM_007294')
+        self.assertEqual(brca1.strand, '-')
+        self.assertEqual(len(brca1.exons), 23)
+        # minus strand: the last exon in genomic order is exon 1
+        self.assertEqual(brca1.exon_numbers()[0], 23)
+        self.assertEqual(brca1.exon_numbers()[-1], 1)
+        self.assertTrue(brca1.start < brca1.cds_start < brca1.cds_end < brca1.end)
+        # genes come back in genomic order, each once
+        self.assertEqual([g.start for g in genes], sorted(g.start for g in genes))
+        self.assertEqual(len(genes), len(set(g.transcript for g in genes)))
+
+    def test_bad_gene_track(self):
+        with self.assertRaises(samplot.SamplotError):
+            samplot.get_gene_track_path('GRCh99')
+
+    def test_plan_rows_do_not_overlap(self):
+        ranges = [samplot.genome_interval('19', 40000000, 43000000)]
+        genes = samplot.get_genes(ranges, samplot.get_gene_track_path('GRCh38'))
+        rows, unlabelled = samplot.plan_gene_track(ranges, genes, False, 8, 6)
+        self.assertEqual(len(rows), samplot.GENE_TRACK_MAX_ROWS)
+        self.assertEqual(sum(len(r) for r in rows) + len(unlabelled), len(genes))
+        self.assertTrue(len(unlabelled) > 0)
+        for row in rows:
+            for left, right in zip(row, row[1:]):
+                self.assertTrue(left['extent'][1] < right['extent'][0])
+            for item in row:
+                self.assertTrue(0 <= item['label_x'] <= 1)
+
+    def test_plot_with_genes(self):
+        import samplot as samplot_package
+        # small region: exon detail; large region: genes only
+        # (the test BAM has no reads here; only the gene track is checked)
+        for end, detail in ((43100000, True), (44000000, False)):
+            fig = samplot_package.plot_region(
+                'chr17', 43090000, end, bams=[bam_1], genes='GRCh38',
+                coverage_only=True)
+            gene_ax = [ax for ax in fig.axes
+                       if ax.get_title(loc='left') == 'GRCh38 MANE Select transcripts']
+            self.assertEqual(len(gene_ax), 1)
+            numbers = [t for t in gene_ax[0].texts if t.get_text().isdigit()]
+            self.assertEqual(len(numbers) > 0, detail)
+
+
 class Test_library(unittest.TestCase):
     def test_plot_region(self):
         import io

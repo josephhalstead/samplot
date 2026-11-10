@@ -80,6 +80,8 @@ class PlotOptions:
     annotation_filenames: Optional[List[str]] = None
     hide_annotation_labels: bool = False
     annotation_scalar: float = 0.3
+    genes: Optional[str] = None
+    gene_detail_max_size: int = 200000
     # appearance
     plot_height: Optional[int] = None
     plot_width: Optional[int] = None
@@ -2671,6 +2673,23 @@ def add_plot(parent_parser):
         required=False
     )
     parser.add_argument(
+        "--genes",
+        type=str,
+        help="Draw a gene track. Give a genome build with a bundled MANE "
+        + "Select track (GRCh38) or the path of a tabix indexed file in the "
+        + "same format (see scripts/make_gene_track.py). Exons, coding "
+        + "regions and exon numbers are drawn on small plots and one bar "
+        + "per gene on large ones",
+        required=False,
+    )
+    parser.add_argument(
+        "--gene_detail_max_size",
+        type=int,
+        help="The gene track shows exons when the plotted region is at most "
+        + "this many bases, and whole genes above it",
+        required=False,
+    )
+    parser.add_argument(
         "--discordant_only_min_size",
         type=int,
         help="When the plotted region is at least this many bases, properly "
@@ -3257,6 +3276,8 @@ def plot_samples(ranges, read_data, grid, ax_i, number_of_axes, options, max_cov
             last_sample_num -= len(options.annotation_files)
         if options.transcript_file:
             last_sample_num -= 1
+        if options.genes:
+            last_sample_num -= 1
 
         if ax_i == last_sample_num:
             curr_ax = axs[hps[-1]]
@@ -3360,7 +3381,7 @@ def plot_legend(fig, legend_fontsize, marker_size):
 # }}}
 
 # {{{def create_gridspec(bams, transcript_file, annotation_files, sv_type ):
-def create_gridspec(options, read_data, fig=None):
+def create_gridspec(options, read_data, fig=None, gene_inches=0):
     """Helper function for creation of a correctly-sized GridSpec instance
     """
     # give one axis to display each sample
@@ -3391,6 +3412,16 @@ def create_gridspec(options, read_data, fig=None):
         ratios += [options.annotation_scalar] * len(options.annotation_files)
     if options.transcript_file:
         ratios.append(options.annotation_scalar * 3)
+
+    # the gene track goes under the samples and annotations (a sample is a
+    # ratio of 9 and about an inch tall)
+    if gene_inches:
+        num_ax += 1
+        gene_ratio = 9 * gene_inches
+        if options.transcript_file:
+            ratios.insert(len(ratios) - 1, gene_ratio)
+        else:
+            ratios.append(gene_ratio)
 
     if fig is None:
         fig = Figure()
@@ -3774,6 +3805,278 @@ def plot_transcript(options, ranges, grid):
 # }}}
 
 
+##Gene track methods
+BUNDLED_GENE_TRACKS = {"GRCh38": "GRCh38_mane_select.bed.gz"}
+
+# inches of figure height per row of the gene track, and for its title
+GENE_ROW_INCHES = {True: 0.36, False: 0.24}
+GENE_TRACK_TITLE_INCHES = 0.3
+GENE_TRACK_MAX_ROWS = 6
+
+
+class Gene:
+    """One transcript from a gene track file (0-based half-open coordinates)"""
+
+    def __init__(self, chrm, start, end, symbol, transcript, strand, cds_start, cds_end, exons):
+        self.chrm = chrm
+        self.start = start
+        self.end = end
+        self.symbol = symbol
+        self.transcript = transcript
+        self.strand = strand
+        self.cds_start = cds_start
+        self.cds_end = cds_end
+        self.exons = exons
+
+    @classmethod
+    def from_line(cls, line):
+        f = line.rstrip("\n").split("\t")
+        exons = list(
+            zip(
+                [int(x) for x in f[8].split(",") if x],
+                [int(x) for x in f[9].split(",") if x],
+            )
+        )
+        return cls(
+            strip_chr(f[0]), int(f[1]), int(f[2]), f[3], f[4], f[5], int(f[6]), int(f[7]), exons
+        )
+
+    def exon_numbers(self):
+        """Exon numbers in transcript order, for exons in genomic order"""
+        n = len(self.exons)
+        return list(range(1, n + 1)) if self.strand != "-" else list(range(n, 0, -1))
+
+    def __repr__(self):
+        return "Gene({}, {}:{}-{})".format(self.symbol, self.chrm, self.start, self.end)
+
+
+def get_gene_track_path(genes):
+    """Path of a bundled gene track (by genome build) or of a custom file"""
+    if genes in BUNDLED_GENE_TRACKS:
+        return os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "data", BUNDLED_GENE_TRACKS[genes]
+        )
+    if os.path.isfile(genes):
+        return genes
+    raise SamplotError(
+        "genes must be one of {} or the path of a gene track file, not {}".format(
+            ", ".join(BUNDLED_GENE_TRACKS), genes
+        )
+    )
+
+
+def get_genes(ranges, gene_track_path):
+    """The genes overlapping the plotted ranges, in genomic order"""
+    try:
+        tbx = pysam.TabixFile(gene_track_path)
+    except Exception as err:
+        raise SamplotError(
+            "Could not open gene track {}: {}".format(gene_track_path, err)
+        ) from err
+
+    genes = {}
+    for r in ranges:
+        chrm = strip_chr(r.chrm)
+        for name in (chrm, "chr" + chrm):
+            if name in tbx.contigs:
+                for line in tbx.fetch(name, max(0, r.start), r.end):
+                    gene = Gene.from_line(line)
+                    genes[(gene.chrm, gene.start, gene.transcript)] = gene
+    tbx.close()
+    return [genes[key] for key in sorted(genes, key=lambda k: (k[0], k[1]))]
+
+
+def map_interval_to_range_points(ranges, range_i, start, end):
+    """Plot x positions (0-1) of the part of start-end inside one range, or
+    None if they don't overlap"""
+    r = ranges[range_i]
+    lo = max(start, r.start)
+    hi = min(end, r.end)
+    if hi < lo:
+        return None
+    span = float(max(1, r.end - r.start))
+    return [
+        (range_i + (lo - r.start) / span) / len(ranges),
+        (range_i + (hi - r.start) / span) / len(ranges),
+    ]
+
+
+def plan_gene_track(ranges, genes, detail, plot_width, fontsize):
+    """Lays the genes out in rows so that neither they nor their labels overlap.
+
+    Returns (rows, unlabelled): rows is a list of lists of items, each a dict
+    with the gene, the range it is drawn in, its x extent and its label;
+    unlabelled are items there was no room to label, which are drawn as bare
+    bars on a row of their own at the bottom.
+    """
+    # rough width of one character as a fraction of the axis width
+    char_width = (0.62 * fontsize / 72.0) / (plot_width * 0.86)
+
+    items = []
+    for gene in genes:
+        for range_i, r in enumerate(ranges):
+            if strip_chr(r.chrm) != gene.chrm:
+                continue
+            x = map_interval_to_range_points(ranges, range_i, gene.start, gene.end)
+            if x is None:
+                continue
+            label = gene.symbol
+            if detail:
+                label += " " + gene.transcript
+            label = (label + " ›") if gene.strand != "-" else ("‹ " + label)
+            # keep the label inside the plot
+            label_width = len(label) * char_width
+            label_x = min(x[0], 1.0 - label_width)
+            if range_i > 0:
+                # clear of the gap drawn between two ranges
+                label_x = max(label_x, float(range_i) / len(ranges) + char_width)
+            items.append(
+                {
+                    "gene": gene,
+                    "range_i": range_i,
+                    "x": x,
+                    "label": label,
+                    "label_x": max(0.0, label_x),
+                    "extent": [min(x[0], label_x), max(x[1], label_x + label_width)],
+                }
+            )
+
+    items.sort(key=lambda item: item["extent"][0])
+    rows = []
+    row_ends = []
+    unlabelled = []
+    gap = 2 * char_width
+    for item in items:
+        for row_i in range(len(rows)):
+            # a gene running on from one range into the next stays on its row
+            same_gene = rows[row_i][-1]["gene"] is item["gene"]
+            if item["extent"][0] >= row_ends[row_i] + (0 if same_gene else gap):
+                rows[row_i].append(item)
+                row_ends[row_i] = item["extent"][1]
+                break
+        else:
+            if len(rows) < GENE_TRACK_MAX_ROWS:
+                rows.append([item])
+                row_ends.append(item["extent"][1])
+            else:
+                unlabelled.append(item)
+    return rows, unlabelled
+
+
+def gene_track_inches(rows, unlabelled, detail):
+    """Figure height the gene track needs"""
+    n_rows = max(1, len(rows)) + (1 if unlabelled else 0)
+    return GENE_TRACK_TITLE_INCHES + GENE_ROW_INCHES[detail] * n_rows
+
+
+def draw_gene(ax, ranges, item, y, detail, fontsize, label=True):
+    """Draws one gene on its row (rows are one y unit tall, y is the bottom)"""
+    gene = item["gene"]
+    x0, x1 = item["x"]
+
+    if not detail:
+        ax.add_patch(
+            mpatches.Rectangle(
+                (x0, y + 0.2), max(x1 - x0, 0.0015), 0.2, facecolor=BLUE,
+                edgecolor="none",
+            )
+        )
+        text_y = y + 0.5
+    else:
+        mid = y + 0.42
+        ax.plot([x0, x1], [mid, mid], "-", color=BLUE, lw=0.6, solid_capstyle="butt")
+        # direction of transcription along the introns
+        n_arrows = int((x1 - x0) / 0.03)
+        if n_arrows > 0:
+            ax.plot(
+                np.linspace(x0, x1, n_arrows + 2)[1:-1],
+                [mid] * n_arrows,
+                linestyle="none",
+                marker=">" if gene.strand != "-" else "<",
+                markersize=1.8,
+                color=BLUE,
+            )
+        last_number_x = None
+        numbers = gene.exon_numbers()
+        for (exon_start, exon_end), number in zip(gene.exons, numbers):
+            exon_x = map_interval_to_range_points(ranges, item["range_i"], exon_start, exon_end)
+            if exon_x is None:
+                continue
+            # thin box for the whole exon, thick for its coding part
+            ax.add_patch(
+                mpatches.Rectangle(
+                    (exon_x[0], mid - 0.08), max(exon_x[1] - exon_x[0], 0.0008), 0.16,
+                    facecolor=BLUE, edgecolor="none", zorder=3,
+                )
+            )
+            coding = [max(exon_start, gene.cds_start), min(exon_end, gene.cds_end)]
+            if coding[1] > coding[0]:
+                cds_x = map_interval_to_range_points(ranges, item["range_i"], coding[0], coding[1])
+                if cds_x is not None:
+                    ax.add_patch(
+                        mpatches.Rectangle(
+                            (cds_x[0], mid - 0.17), max(cds_x[1] - cds_x[0], 0.0008), 0.34,
+                            facecolor=BLUE, edgecolor="none", zorder=3,
+                        )
+                    )
+            # exon numbers, where there is room for them
+            centre = (exon_x[0] + exon_x[1]) / 2.0
+            if last_number_x is None or abs(centre - last_number_x) > 0.018:
+                ax.text(
+                    centre, y + 0.2, str(number), fontsize=fontsize * 0.7,
+                    color=MUTED_INK, ha="center", va="top",
+                )
+                last_number_x = centre
+        text_y = y + 0.66
+
+    if label:
+        ax.text(
+            item["label_x"], text_y, item["label"], fontsize=fontsize, color=INK,
+            ha="left", va="bottom",
+        )
+
+
+def plot_gene_track(ax, ranges, rows, unlabelled, detail, title, fontsize, sv=None, sv_type=None):
+    """Draws the planned gene track"""
+    # genes there was no room to label share a row of their own at the bottom
+    extra_row = 1 if unlabelled else 0
+    n_rows = max(1, len(rows)) + extra_row
+    clean_axis(ax)
+    ax.set_ylim([0, n_rows])
+    ax.set_title(title, fontsize=8, loc="left", color=MUTED_INK)
+
+    # the first row is drawn at the top
+    for row_i, row in enumerate(rows):
+        for item in row:
+            draw_gene(ax, ranges, item, n_rows - 1 - row_i, detail, fontsize)
+    for item in unlabelled:
+        draw_gene(ax, ranges, item, 0, False, fontsize, label=False)
+
+    if not rows:
+        ax.text(
+            0.5, 0.5, "No genes in view", ha="center", va="center",
+            fontsize=fontsize, color=MUTED_INK,
+        )
+    elif unlabelled:
+        ax.text(
+            0.0, 0.5, "{} more genes, not labelled".format(len(unlabelled)),
+            ha="left", va="bottom", fontsize=fontsize, color=MUTED_INK,
+        )
+
+    # carry the breakpoints down through the genes
+    if sv and sv_type:
+        for b in get_breakpoint_points(sv, ranges):
+            if b is not None:
+                ax.axvline(
+                    b, color=sv_color(sv_type), linestyle="--", linewidth=0.8,
+                    alpha=0.8, zorder=1,
+                )
+
+    # break the track when we have multiple ranges
+    for i in range(1, len(ranges)):
+        ax.axvline(x=float(i) / len(ranges), color="white", linewidth=5, zorder=5)
+
+
 ########################################################################
 # main block
 ########################################################################
@@ -3816,6 +4119,24 @@ def create_figure(options):
     # set up plot
     plot_height, plot_width, window, ranges = set_plot_dimensions(sv, options)
 
+    # plan the gene track, which sets how tall it needs to be
+    gene_inches = 0
+    if options.genes:
+        gene_detail = (
+            sum(r.end - r.start for r in ranges) <= options.gene_detail_max_size
+        )
+        gene_track_path = get_gene_track_path(options.genes)
+        gene_rows, genes_unlabelled = plan_gene_track(
+            ranges,
+            get_genes(ranges, gene_track_path),
+            gene_detail,
+            plot_width,
+            options.annotation_fontsize,
+        )
+        gene_inches = gene_track_inches(gene_rows, genes_unlabelled, gene_detail)
+        if not options.plot_height:
+            plot_height += gene_inches
+
     # read alignment data
     read_data, max_coverage = get_read_data(ranges, options)
     if options.max_coverage:
@@ -3828,7 +4149,9 @@ def create_figure(options):
         fig = Figure(figsize=(plot_width, plot_height))
 
         # set up grid organizer
-        grid, num_ax = create_gridspec(options, read_data, fig=fig)
+        grid, num_ax = create_gridspec(
+            options, read_data, fig=fig, gene_inches=gene_inches
+        )
         current_axis_idx = 0
 
         # plot variant on top
@@ -3852,6 +4175,25 @@ def create_figure(options):
         # Plot annotation files
         if options.annotation_files:
             plot_annotations(options, ranges, grid, current_axis_idx)
+
+        # Plot the gene track
+        if options.genes:
+            gene_ax_i = num_ax - (2 if options.transcript_file else 1)
+            if options.genes in BUNDLED_GENE_TRACKS:
+                gene_title = "{} MANE Select transcripts".format(options.genes)
+            else:
+                gene_title = os.path.basename(gene_track_path)
+            plot_gene_track(
+                fig.add_subplot(grid[gene_ax_i]),
+                ranges,
+                gene_rows,
+                genes_unlabelled,
+                gene_detail,
+                gene_title,
+                options.annotation_fontsize,
+                sv=sv,
+                sv_type=options.sv_type,
+            )
 
         # Plot sorted/bgziped/tabixed transcript file
         if options.transcript_file:

@@ -37,4 +37,5 @@ packages = ["samplot"]
 version = { attr = "samplot.__version__" }
 
 [tool.setuptools.package-data]
-samplot = ["templates/*.html"]
+# report template and the bundled gene tracks (see scripts/make_gene_track.py)
+samplot = ["templates/*.html", "data/*.bed.gz", "data/*.bed.gz.tbi"]
