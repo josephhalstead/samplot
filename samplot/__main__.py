@@ -3,7 +3,7 @@ import argparse
 import logging
 import sys
 
-from .__init__ import __version__
+from . import __version__
 from .samplot import add_plot
 from .samplot_vcf import add_vcf
 

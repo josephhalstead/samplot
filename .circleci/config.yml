@@ -33,7 +33,7 @@ variables:
   install_samplot: &install_samplot
     run:
       name: Install Samplot
-      command: python setup.py install
+      command: pip install .
 
 
 

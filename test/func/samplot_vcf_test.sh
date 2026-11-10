@@ -110,8 +110,8 @@ if [ $from_vcf_auto ]; then
     assert_equal $test_dir/DUP_11_67974431_67975639.png $( ls $test_dir/DUP_11_67974431_67975639.png )
     assert_equal $test_dir/INV_12_12544867_12546613.png $( ls $test_dir/INV_12_12544867_12546613.png )
     assert_equal $test_dir/DEL_19_12694866_12698924.png $( ls $test_dir/DEL_19_12694866_12698924.png )
-    assert_equal $test_dir/TRA_1_24804398_43059290.png $( ls $test_dir/TRA_1_24804398_43059290.png )
-    assert_equal $test_dir/TRA_1_24804399_99813787.png $( ls $test_dir/TRA_1_24804399_99813787.png )
+    assert_equal $test_dir/TRA_1_24804398_1_43059290.png $( ls $test_dir/TRA_1_24804398_1_43059290.png )
+    assert_equal $test_dir/TRA_1_24804399_4_99813787.png $( ls $test_dir/TRA_1_24804399_4_99813787.png )
 fi
 rm -f $cmd_file
 rm -rf $test_dir
@@ -138,8 +138,8 @@ if [ $from_vcf_auto_multithread ]; then
     assert_equal $test_dir/DUP_11_67974431_67975639.png $( ls $test_dir/DUP_11_67974431_67975639.png )
     assert_equal $test_dir/INV_12_12544867_12546613.png $( ls $test_dir/INV_12_12544867_12546613.png )
     assert_equal $test_dir/DEL_19_12694866_12698924.png $( ls $test_dir/DEL_19_12694866_12698924.png )
-    assert_equal $test_dir/TRA_1_24804398_43059290.png $( ls $test_dir/TRA_1_24804398_43059290.png )
-    assert_equal $test_dir/TRA_1_24804399_99813787.png $( ls $test_dir/TRA_1_24804399_99813787.png )
+    assert_equal $test_dir/TRA_1_24804398_1_43059290.png $( ls $test_dir/TRA_1_24804398_1_43059290.png )
+    assert_equal $test_dir/TRA_1_24804399_4_99813787.png $( ls $test_dir/TRA_1_24804399_4_99813787.png )
 fi
 rm -f $cmd_file
 rm -rf $test_dir
@@ -166,8 +166,8 @@ if [ $plot_all ]; then
     assert_equal "$test_dir/DEL_19_12694866_12698924.png" $( ls "$test_dir/DEL_19_12694866_12698924.png" )
     assert_equal "$test_dir/DUP_4_99813786_99817098.png" $( ls "$test_dir/DUP_4_99813786_99817098.png" )
     assert_equal "$test_dir/DUP_4_99813786_99817098.png" $( ls "$test_dir/DUP_4_99813786_99817098.png" )
-    assert_equal "$test_dir/TRA_1_24804398_43059290.png" $( ls $test_dir/TRA_1_24804398_43059290.png )
-    assert_equal "$test_dir/TRA_1_24804399_99813787.png" $( ls $test_dir/TRA_1_24804399_99813787.png )
+    assert_equal "$test_dir/TRA_1_24804398_1_43059290.png" $( ls $test_dir/TRA_1_24804398_1_43059290.png )
+    assert_equal "$test_dir/TRA_1_24804399_4_99813787.png" $( ls $test_dir/TRA_1_24804399_4_99813787.png )
     assert_equal "$test_dir/DEL_1_24804397_24807302.png" $( ls "$test_dir/DEL_1_24804397_24807302.png" )
     assert_equal "$test_dir/DUP_11_67974431_67975639.png" $( ls "$test_dir/DUP_11_67974431_67975639.png" )
     assert_equal "$test_dir/INV_12_12544867_12546613.png" $( ls "$test_dir/INV_12_12544867_12546613.png" )
@@ -199,8 +199,8 @@ if [ $plot_all_multithread ]; then
     assert_equal "$test_dir/DEL_19_12694866_12698924.png" $( ls "$test_dir/DEL_19_12694866_12698924.png" )
     assert_equal "$test_dir/DUP_4_99813786_99817098.png" $( ls "$test_dir/DUP_4_99813786_99817098.png" )
     assert_equal "$test_dir/DUP_4_99813786_99817098.png" $( ls "$test_dir/DUP_4_99813786_99817098.png" )
-    assert_equal "$test_dir/TRA_1_24804398_43059290.png" $( ls $test_dir/TRA_1_24804398_43059290.png )
-    assert_equal "$test_dir/TRA_1_24804399_99813787.png" $( ls $test_dir/TRA_1_24804399_99813787.png )
+    assert_equal "$test_dir/TRA_1_24804398_1_43059290.png" $( ls $test_dir/TRA_1_24804398_1_43059290.png )
+    assert_equal "$test_dir/TRA_1_24804399_4_99813787.png" $( ls $test_dir/TRA_1_24804399_4_99813787.png )
     assert_equal "$test_dir/DEL_1_24804397_24807302.png" $( ls "$test_dir/DEL_1_24804397_24807302.png" )
     assert_equal "$test_dir/DUP_11_67974431_67975639.png" $( ls "$test_dir/DUP_11_67974431_67975639.png" )
     assert_equal "$test_dir/INV_12_12544867_12546613.png" $( ls "$test_dir/INV_12_12544867_12546613.png" )

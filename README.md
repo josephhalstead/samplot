@@ -79,8 +79,13 @@ options:
   --transcript_filename TRANSCRIPT_FILENAME
                         Name for transcript track
   --max_coverage_points MAX_COVERAGE_POINTS
-                        number of points to plot in coverage axis (downsampled
-                        from region size for speed)
+                        number of points to plot in coverage axis (the region
+                        is averaged into this many bins)
+  --coverage_trend_min_size COVERAGE_TREND_MIN_SIZE
+                        Draw a smoothed (rolling median) coverage trend line,
+                        which makes copy number breakpoints easier to see,
+                        when the plotted region is at least this many bases.
+                        0 to never draw it (default: 20000)
   -A ANNOTATION_FILES [ANNOTATION_FILES ...], --annotation_files ANNOTATION_FILES [ANNOTATION_FILES ...]
                         Space-delimited list of bed.gz tabixed files of
                         annotations (such as repeats, mappability, etc.)
@@ -153,6 +158,51 @@ options:
 ```
 conda install -c bioconda samplot 
 ```
+
+This version (1.4) supports Python 3.9 and later with current releases of
+matplotlib, numpy and pysam, and can be installed with pip into any
+environment (it needs no pinned dependencies):
+```
+pip install /path/to/samplot      # a checkout of this repository
+```
+
+## Using samplot as a library
+`samplot plot` is also available as a Python function, for plotting a single
+variant from an app, notebook or pipeline script:
+```python
+import samplot
+
+fig = samplot.plot_region(
+    "chr7", 133134821, 133411318,
+    bams=["proband.cram", "mother.cram", "father.cram"],
+    titles=["Proband", "Mother", "Father"],
+    sv_type="DUP",
+    reference="GRCh38.fa",          # needed for CRAM
+    output_file="dup.png",          # optional
+)
+```
+`plot_region` returns a matplotlib `Figure`. Any `samplot plot` option can be
+given by its long name (`window=1000`, `coverage_only=True`,
+`transcript_file="genes.gff3.gz"`, `max_coverage=60` ...). No global
+matplotlib state is used (no pyplot, backend or rcParams changes), so it can
+be called from a web app. To get image bytes rather than a file:
+```python
+import io
+buffer = io.BytesIO()
+fig.savefig(buffer, format="png", dpi=150)
+```
+Problems with the inputs raise `samplot.SamplotError`.
+
+## Coverage in wide regions and copy number variants
+Coverage is the mean depth in each of `--max_coverage_points` bins across the
+plot, so wide regions are not spiky. When the plotted region is at least
+`--coverage_trend_min_size` bases (20kb by default, 0 to turn off) a rolling
+median trend line is drawn over the coverage; being a median it stays sharp
+at copy number breakpoints. The breakpoints are marked with dashed lines down
+every sample, the variant is lightly shaded, and for DEL/DUP/CNV types the
+median depth of the flanks is drawn as a dashed guide with the depth ratio of
+the variant to its flanks (about 0.5x for a heterozygous deletion, 1.5x for a
+duplication) written on the panel.
 
 ## Examples: 
 

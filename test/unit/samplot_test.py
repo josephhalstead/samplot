@@ -1,4 +1,5 @@
 import unittest
+import numpy as np
 import sys
 
 from samplot import samplot
@@ -1195,6 +1196,100 @@ class Test_linked(unittest.TestCase):
 
     #}}}
 #}}}
+
+class Test_coverage_binning(unittest.TestCase):
+    def test_get_range_coverage(self):
+        values = np.arange(20).reshape(10, 2)
+        cov = [samplot.RangeCoverage(100, values)]
+        out = samplot.get_range_coverage(cov, 98, 103)
+        self.assertEqual(out.shape, (6, 2))
+        # positions before the fetched range are zero
+        self.assertEqual(out[:2].sum(), 0)
+        self.assertEqual(list(out[2]), [0, 1])
+        self.assertEqual(list(out[5]), [6, 7])
+        # no data at all
+        self.assertEqual(samplot.get_range_coverage(None, 1, 5).sum(), 0)
+
+    def test_bin_coverage_is_a_mean(self):
+        values = np.zeros((1000, 2))
+        values[:500, 1] = 10
+        values[500:, 1] = 20
+        values[250, 1] = 1000  # a one base spike
+        centres, binned = samplot.bin_coverage(values, 10)
+        self.assertEqual(len(binned), 10)
+        self.assertAlmostEqual(binned[0, 1], 10)
+        self.assertAlmostEqual(binned[9, 1], 20)
+        # the spike is averaged into its bin rather than plotted or dropped
+        self.assertAlmostEqual(binned[2, 1], (99 * 10 + 1000) / 100.0)
+        # fewer bases than points: one bin per base
+        centres, binned = samplot.bin_coverage(values[:5], 10)
+        self.assertEqual(len(binned), 5)
+        self.assertEqual(list(centres), [0, 1, 2, 3, 4])
+
+    def test_rolling_median_keeps_steps(self):
+        values = np.array([10.0] * 50 + [20.0] * 50)
+        values[20] = 500
+        trend = samplot.rolling_median(values, 9)
+        self.assertEqual(len(trend), 100)
+        self.assertEqual(trend[20], 10)
+        self.assertEqual(trend[40], 10)
+        self.assertEqual(trend[60], 20)
+
+    def test_nice_axis_top(self):
+        self.assertEqual(samplot.nice_axis_top(78, 5), 100)
+        self.assertEqual(samplot.nice_axis_top(50, 5), 50)
+        self.assertEqual(samplot.nice_axis_top(3935, 5), 4000)
+        self.assertEqual(samplot.nice_axis_top(0, 5), 5)
+
+    def test_add_coverage_clips_to_range(self):
+        class Read:
+            reference_start = 95
+            cigartuples = [(4, 5), (0, 10), (2, 3), (0, 4)]
+        matrix = np.zeros((20, 2), dtype=int)
+        samplot.add_coverage(Read(), matrix, 100, 1)
+        # 95-104 aligned (100-104 in range), 105-107 deleted, 108-111 aligned
+        self.assertEqual(list(matrix[:, 1]), [1] * 5 + [0] * 3 + [1] * 4 + [0] * 8)
+
+
+class Test_pair_event_type(unittest.TestCase):
+    def test_overlapping_pair_is_normal(self):
+        # reverse read starting before its overlapping forward mate
+        short_fragment = [
+            samplot.PairedEnd('1', 100, 250, True, None, None),
+            samplot.PairedEnd('1', 105, 255, False, None, None),
+        ]
+        everted = [
+            samplot.PairedEnd('1', 100, 250, True, None, None),
+            samplot.PairedEnd('1', 5000, 5150, False, None, None),
+        ]
+        self.assertEqual(samplot.get_pair_event_type(short_fragment), 'Deletion/Normal')
+        self.assertEqual(samplot.get_pair_event_type(everted), 'Duplication')
+
+
+class Test_library(unittest.TestCase):
+    def test_plot_region(self):
+        import io
+        import samplot as samplot_package
+        from matplotlib.figure import Figure
+
+        fig = samplot_package.plot_region(
+            'chr4', 115928730, 115931875,
+            bams=[bam_1],
+            sv_type='DEL',
+            titles=['NA12878'])
+        self.assertIsInstance(fig, Figure)
+        buffer = io.BytesIO()
+        fig.savefig(buffer, format='png', dpi=50)
+        self.assertEqual(buffer.getvalue()[:4], b'\x89PNG')
+
+    def test_plot_region_errors(self):
+        import samplot as samplot_package
+
+        with self.assertRaises(TypeError):
+            samplot_package.plot_region('chr4', 1, 2, bams=[bam_1], not_an_option=1)
+        with self.assertRaises(samplot_package.SamplotError):
+            samplot_package.plot_region('chr4', 1, 2, bams=['missing.bam'], sv_type='DEL')
+
 
 if __name__ == '__main__':
     unittest.main()
