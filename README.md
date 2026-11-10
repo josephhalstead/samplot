@@ -1,4 +1,4 @@
-[![CircleCI](https://circleci.com/gh/ryanlayer/samplot/tree/master.svg?style=svg)](https://circleci.com/gh/ryanlayer/samplot/tree/master)
+[![tests](https://github.com/josephhalstead/samplot/actions/workflows/tests.yml/badge.svg)](https://github.com/josephhalstead/samplot/actions/workflows/tests.yml)
 [![install with bioconda](https://img.shields.io/badge/install%20with-bioconda-brightgreen.svg?style=flat)](http://bioconda.github.io/recipes/samplot/README.html)
 
 <center><img src="/doc/imgs/samplot_logo_v5.png" width="300"/></center>
@@ -79,8 +79,30 @@ options:
   --transcript_filename TRANSCRIPT_FILENAME
                         Name for transcript track
   --max_coverage_points MAX_COVERAGE_POINTS
-                        number of points to plot in coverage axis (downsampled
-                        from region size for speed)
+                        number of points to plot in coverage axis (the region
+                        is averaged into this many bins)
+  --genes GENES         Draw a gene track. Give a genome build with a bundled
+                        MANE Select track (GRCh38) or the path of a tabix
+                        indexed file in the same format (see
+                        scripts/make_gene_track.py). Exons, coding regions and
+                        exon numbers are drawn on small plots and one bar per
+                        gene on large ones
+  --gene_detail_max_size GENE_DETAIL_MAX_SIZE
+                        The gene track shows exons when the plotted region is
+                        at most this many bases, and whole genes above it
+                        (default: 200000)
+  --discordant_only_min_size DISCORDANT_ONLY_MIN_SIZE
+                        When the plotted region is at least this many bases,
+                        properly paired reads are only counted towards
+                        coverage: just discordant pairs and split reads are
+                        kept and drawn, which is much faster and less
+                        cluttered for large variants. 0 to always keep normal
+                        pairs (default: 100000)
+  --coverage_trend_min_size COVERAGE_TREND_MIN_SIZE
+                        Draw a smoothed (rolling median) coverage trend line,
+                        which makes copy number breakpoints easier to see,
+                        when the plotted region is at least this many bases.
+                        0 to never draw it (default: 20000)
   -A ANNOTATION_FILES [ANNOTATION_FILES ...], --annotation_files ANNOTATION_FILES [ANNOTATION_FILES ...]
                         Space-delimited list of bed.gz tabixed files of
                         annotations (such as repeats, mappability, etc.)
@@ -136,7 +158,7 @@ options:
   --jitter [JITTER]     Add uniform random noise to insert sizes. This can be
                         helpful to resolve overlapping entries. Either a
                         custom value (<1.0) is supplied or 0.08 will be used.
-  --dpi DPI             Dots per inches (pixel count, default 300)
+  --dpi DPI             Dots per inches (pixel count) (default: 150)
   --annotation_scalar ANNOTATION_SCALAR
                         scaling factor for the optional annotation/trascript
                         tracks
@@ -153,6 +175,85 @@ options:
 ```
 conda install -c bioconda samplot 
 ```
+
+This version (1.4) supports Python 3.10 and later with current releases of
+matplotlib, numpy and pysam, and can be installed with pip into any
+environment (it needs no pinned dependencies):
+```
+pip install /path/to/samplot      # a checkout of this repository
+```
+
+## Using samplot as a library
+`samplot plot` is also available as a Python function, for plotting a single
+variant from an app, notebook or pipeline script:
+```python
+import samplot
+
+fig = samplot.plot_region(
+    "chr7", 133134821, 133411318,
+    bams=["proband.cram", "mother.cram", "father.cram"],
+    titles=["Proband", "Mother", "Father"],
+    sv_type="DUP",
+    reference="GRCh38.fa",          # needed for CRAM
+    output_file="dup.png",          # optional
+)
+```
+`plot_region` returns a matplotlib `Figure`. Any `samplot plot` option can be
+given by its long name (`window=1000`, `coverage_only=True`,
+`transcript_file="genes.gff3.gz"`, `max_coverage=60` ...). No global
+matplotlib state is used (no pyplot, backend or rcParams changes), so it can
+be called from a web app. To get image bytes rather than a file:
+```python
+import io
+buffer = io.BytesIO()
+fig.savefig(buffer, format="png", dpi=150)
+```
+Problems with the inputs raise `samplot.SamplotError`.
+
+All settings and their defaults are the fields of `samplot.PlotOptions`,
+which is also where the command line gets its defaults. If you want to build
+the options yourself, `samplot.create_figure(samplot.PlotOptions(...))` is
+what `plot_region` calls.
+
+## Gene track
+`--genes GRCh38` (`genes="GRCh38"` from Python) draws a gene track under the
+samples from a bundled file of GRCh38 MANE Select transcripts (RefSeq), so no
+annotation file is needed:
+```
+samplot plot -c chr17 -s 43090000 -e 43100000 -t DEL -b sample.cram -r GRCh38.fa --genes GRCh38
+```
+How much is drawn depends on the width of the plot. When the plotted region
+is at most `--gene_detail_max_size` bases (200kb by default) each transcript
+is drawn with its exons (thick where coding, thin for UTRs), the direction of
+transcription, its RefSeq accession and exon numbers. Wider plots draw one
+bar per gene with its symbol; genes are packed into rows so labels do not
+overlap, and in very gene dense regions the genes there is no room to label
+are drawn on a final row without names. The variant breakpoints are carried
+down through the track.
+
+The bundled track has one transcript per protein coding gene with a MANE
+Select transcript (about 19,300); non-coding genes and alternative
+transcripts are not in it. It is built by `scripts/make_gene_track.py`, and
+`--genes` also accepts the path of any tabix indexed file in the same format,
+for another build or transcript set. `-T/--transcript_file` (GFF3) still
+works as before and can be used alongside it.
+
+## Coverage in wide regions and copy number variants
+Coverage is the mean depth in each of `--max_coverage_points` bins across the
+plot, so wide regions are not spiky. When the plotted region is at least
+`--coverage_trend_min_size` bases (20kb by default, 0 to turn off) a rolling
+median trend line is drawn over the coverage; being a median it stays sharp
+at copy number breakpoints. The breakpoints are marked with dashed lines down
+every sample, the variant is lightly shaded, and for DEL/DUP/CNV types the
+median depth of the flanks is drawn as a dashed guide with the depth ratio of
+the variant to its flanks (about 0.5x for a heterozygous deletion, 1.5x for a
+duplication) written on the panel.
+
+When the plotted region is at least `--discordant_only_min_size` bases (100kb
+by default, 0 to turn off) properly paired reads are only counted towards
+coverage, and just discordant pairs and split reads are kept and drawn. This
+relies on the aligner setting the proper pair flag. Images are saved at 150
+dpi by default (`--dpi`).
 
 ## Examples: 
 
@@ -232,7 +333,7 @@ curl http://hgdownload.soe.ucsc.edu/goldenPath/hg19/database/rmsk.txt.gz \
 tabix rmsk.bed.gz
 ```
 
-Plot:
+Pass the gene annotations with `-T` and any number of feature files with `-A`:
 ```
 samplot plot \
     -n NA12878 NA12889 NA12890 \
@@ -249,7 +350,22 @@ samplot plot \
     -A rmsk.bed.gz wgEncodeDukeMapabilityUniqueness35bp.bed.gz
 ```
 
-<img src="/doc/imgs/4_115928726_115931880.d100.genes_reps_map.png">
+The same thing can be tried without downloading anything, using the small
+annotation files in the test data (a region with no SV, so no `-t`):
+```
+samplot plot \
+    -n sample \
+    -b samplot/test/data/2_59305747-59505747_X_151018513-151218513.BND.bam \
+    -o X_151095000_151150000.genes_alu.png \
+    -c X \
+    -s 151095000 \
+    -e 151150000 \
+    -T samplot/test/data/Homo_sapiens.GRCh37.82.sort.2_X.gff3.gz \
+    -A samplot/test/data/Alu.2_X.bed.gz \
+    --annotation_scalar 1
+```
+
+<img src="/doc/imgs/X_151095000_151150000.genes_alu.png">
 
 ## Generating images from a VCF file
 To plot images from structural variant calls in a VCF file, use samplot's
@@ -415,7 +531,7 @@ the region that is given by `-c` `-s` and `-e` will be displayed.
 
 #### Long read (Oxford nanopore and PacBio) and linked read support
 Any alignment that is longer than 1000 bp is treated as a long read, and
-the plot design will focus on aligned regions and gaps. Aligned regions are in orange, and gaps follow the same DEL/DUP/INV color code used for short reads. The height of the alignment is based on the size of its largest gap.
+the plot design will focus on aligned regions and gaps. Aligned regions are in purple, and gaps follow the same DEL/DUP/INV color code used for short reads. The height of the alignment is based on the size of its largest gap.
 
 <img src="/doc/imgs/longread_del.png">
 

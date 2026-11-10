@@ -6,7 +6,6 @@ companion HTML image browser.
 
 Note: additional arguments are passed through to samplot plot
 """
-from __future__ import print_function
 
 import argparse
 from collections import Counter
@@ -20,10 +19,7 @@ import re
 import pysam
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-try:
-    from shlex import quote
-except ImportError:
-    from pipes import quote
+from shlex import quote
 
 from .samplot import add_plot
 

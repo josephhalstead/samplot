@@ -484,4 +484,4 @@ fi
 rm $out_file_name
 
 
-rm -rf $func_path"img/" ssshtest
+rm -rf $func_path"img/"

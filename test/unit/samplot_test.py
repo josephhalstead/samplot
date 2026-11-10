@@ -1,4 +1,5 @@
 import unittest
+import numpy as np
 import sys
 
 from samplot import samplot
@@ -46,16 +47,18 @@ class Test_set_plot_dimensions(unittest.TestCase):
 
         # Test basic function where window is set to be proportional to SV size
         r_plot_height, r_plot_width, r_window, r_ranges = \
-            samplot.set_plot_dimensions(sv,
-                                        sv_type,
-                                        plot_height,
-                                        plot_width,
-                                        bams,
-                                        None,
-                                        annotation_files,
-                                        transcript_file,
-                                        window,
-                                        zoom)
+samplot.set_plot_dimensions(
+                sv,
+                samplot.PlotOptions(
+                sv_type=sv_type,
+                plot_height=plot_height,
+                plot_width=plot_width,
+                bams=bams,
+                reference=None,
+                annotation_files=annotation_files,
+                transcript_file=transcript_file,
+                window=window,
+                zoom=zoom))
 
         self.assertEqual(r_plot_height, 5)
         self.assertEqual(r_plot_width, 8)
@@ -69,16 +72,18 @@ class Test_set_plot_dimensions(unittest.TestCase):
         # Test to see if zoom is ignored when it is larger than window
         zoom = 10000
         r_plot_height, r_plot_width, r_window, r_ranges = \
-            samplot.set_plot_dimensions(sv,
-                                        sv_type,
-                                        plot_height,
-                                        plot_width,
-                                        bams,
-                                        None,
-                                        annotation_files,
-                                        transcript_file,
-                                        window,
-                                        zoom)
+samplot.set_plot_dimensions(
+                sv,
+                samplot.PlotOptions(
+                sv_type=sv_type,
+                plot_height=plot_height,
+                plot_width=plot_width,
+                bams=bams,
+                reference=None,
+                annotation_files=annotation_files,
+                transcript_file=transcript_file,
+                window=window,
+                zoom=zoom))
 
         self.assertEqual( r_ranges[0], 
                           samplot.genome_interval(sv_chrm,
@@ -89,16 +94,18 @@ class Test_set_plot_dimensions(unittest.TestCase):
         # Test to see if zoom creates two ranges
         zoom = 100
         r_plot_height, r_plot_width, r_window, r_ranges = \
-            samplot.set_plot_dimensions(sv,
-                                        sv_type,
-                                        plot_height,
-                                        plot_width,
-                                        bams,
-                                        None,
-                                        annotation_files,
-                                        transcript_file,
-                                        window,
-                                        zoom)
+samplot.set_plot_dimensions(
+                sv,
+                samplot.PlotOptions(
+                sv_type=sv_type,
+                plot_height=plot_height,
+                plot_width=plot_width,
+                bams=bams,
+                reference=None,
+                annotation_files=annotation_files,
+                transcript_file=transcript_file,
+                window=window,
+                zoom=zoom))
 
         self.assertEqual( r_window, zoom)
         self.assertEqual( len(r_ranges), 2)
@@ -118,16 +125,18 @@ class Test_set_plot_dimensions(unittest.TestCase):
         sv = [samplot.genome_interval(sv_chrm,sv_start,sv_start),
               samplot.genome_interval(sv_chrm,sv_end,sv_end)]
         r_plot_height, r_plot_width, r_window, r_ranges = \
-            samplot.set_plot_dimensions(sv,
-                                        sv_type,
-                                        plot_height,
-                                        plot_width,
-                                        bams,
-                                        None,
-                                        annotation_files,
-                                        transcript_file,
-                                        window,
-                                        zoom)
+samplot.set_plot_dimensions(
+                sv,
+                samplot.PlotOptions(
+                sv_type=sv_type,
+                plot_height=plot_height,
+                plot_width=plot_width,
+                bams=bams,
+                reference=None,
+                annotation_files=annotation_files,
+                transcript_file=transcript_file,
+                window=window,
+                zoom=zoom))
 
         self.assertEqual( len(r_ranges), 2)
         self.assertEqual( r_ranges[0], 
@@ -170,40 +179,31 @@ class Test_set_plot_dimensions(unittest.TestCase):
 
         # Test basic function where window is set to be proportional to SV size
         r_plot_height, r_plot_width, r_window, r_ranges = \
-            samplot.set_plot_dimensions(sv,
-                                        sv_type,
-                                        plot_height,
-                                        plot_width,
-                                        bams,
-                                        None,
-                                        annotation_files,
-                                        transcript_file,
-                                        window,
-                                        zoom)
+samplot.set_plot_dimensions(
+                sv,
+                samplot.PlotOptions(
+                sv_type=sv_type,
+                plot_height=plot_height,
+                plot_width=plot_width,
+                bams=bams,
+                reference=None,
+                annotation_files=annotation_files,
+                transcript_file=transcript_file,
+                window=window,
+                zoom=zoom))
 
         reference = None
         separate_mqual = 0
         include_mqual = 1
-        coverage_only = None
+        coverage_only = False
         long_read = 1000
         long_event_size = 100
-        same_yaxis_scales = None
+        same_yaxis_scales = False
         max_depth = 100
         z = 4
         ignore_hp = False
 
-        read_data,max_coverage = samplot.get_read_data(r_ranges,
-                                                       bams,
-                                                       reference,
-                                                       separate_mqual,
-                                                       include_mqual,
-                                                       coverage_only,
-                                                       long_read,
-                                                       long_event_size,
-                                                       same_yaxis_scales,
-                                                       max_depth,
-                                                       z,
-                                                       ignore_hp)
+        read_data,max_coverage = samplot.get_read_data(r_ranges, samplot.PlotOptions(bams=bams, reference=reference, separate_mqual=separate_mqual, include_mqual=include_mqual, coverage_only=coverage_only, long_read=long_read, min_event_size=long_event_size, same_yaxis_scales=same_yaxis_scales, max_depth=max_depth, z=z, ignore_hp=ignore_hp))
     #}}}
 #}}}
 
@@ -1195,6 +1195,225 @@ class Test_linked(unittest.TestCase):
 
     #}}}
 #}}}
+
+class Test_coverage_binning(unittest.TestCase):
+    def test_get_range_coverage(self):
+        values = np.arange(20).reshape(10, 2)
+        cov = [samplot.RangeCoverage(100, values)]
+        out = samplot.get_range_coverage(cov, 98, 103)
+        self.assertEqual(out.shape, (6, 2))
+        # positions before the fetched range are zero
+        self.assertEqual(out[:2].sum(), 0)
+        self.assertEqual(list(out[2]), [0, 1])
+        self.assertEqual(list(out[5]), [6, 7])
+        # no data at all
+        self.assertEqual(samplot.get_range_coverage(None, 1, 5).sum(), 0)
+
+    def test_bin_coverage_is_a_mean(self):
+        values = np.zeros((1000, 2))
+        values[:500, 1] = 10
+        values[500:, 1] = 20
+        values[250, 1] = 1000  # a one base spike
+        centres, binned = samplot.bin_coverage(values, 10)
+        self.assertEqual(len(binned), 10)
+        self.assertAlmostEqual(binned[0, 1], 10)
+        self.assertAlmostEqual(binned[9, 1], 20)
+        # the spike is averaged into its bin rather than plotted or dropped
+        self.assertAlmostEqual(binned[2, 1], (99 * 10 + 1000) / 100.0)
+        # fewer bases than points: one bin per base
+        centres, binned = samplot.bin_coverage(values[:5], 10)
+        self.assertEqual(len(binned), 5)
+        self.assertEqual(list(centres), [0, 1, 2, 3, 4])
+
+    def test_rolling_median_keeps_steps(self):
+        values = np.array([10.0] * 50 + [20.0] * 50)
+        values[20] = 500
+        trend = samplot.rolling_median(values, 9)
+        self.assertEqual(len(trend), 100)
+        self.assertEqual(trend[20], 10)
+        self.assertEqual(trend[40], 10)
+        self.assertEqual(trend[60], 20)
+
+    def test_nice_axis_top(self):
+        self.assertEqual(samplot.nice_axis_top(78, 5), 100)
+        self.assertEqual(samplot.nice_axis_top(50, 5), 50)
+        self.assertEqual(samplot.nice_axis_top(3935, 5), 4000)
+        self.assertEqual(samplot.nice_axis_top(0, 5), 5)
+
+    def test_add_coverage_clips_to_range(self):
+        class Read:
+            reference_start = 95
+            cigartuples = [(4, 5), (0, 10), (2, 3), (0, 4)]
+        matrix = np.zeros((20, 2), dtype=int)
+        samplot.add_coverage(Read(), matrix, 100, 1)
+        # 95-104 aligned (100-104 in range), 105-107 deleted, 108-111 aligned
+        self.assertEqual(list(matrix[:, 1]), [1] * 5 + [0] * 3 + [1] * 4 + [0] * 8)
+
+
+class Test_pair_event_type(unittest.TestCase):
+    def test_overlapping_pair_is_normal(self):
+        # reverse read starting before its overlapping forward mate
+        short_fragment = [
+            samplot.PairedEnd('1', 100, 250, True, None, None),
+            samplot.PairedEnd('1', 105, 255, False, None, None),
+        ]
+        everted = [
+            samplot.PairedEnd('1', 100, 250, True, None, None),
+            samplot.PairedEnd('1', 5000, 5150, False, None, None),
+        ]
+        self.assertEqual(samplot.get_pair_event_type(short_fragment), 'Deletion/Normal')
+        self.assertEqual(samplot.get_pair_event_type(everted), 'Duplication')
+
+
+class Test_speed_paths(unittest.TestCase):
+    def test_coverage_counter_matches_add_coverage(self):
+        class Read:
+            def __init__(self, start, cigartuples):
+                self.reference_start = start
+                self.cigartuples = cigartuples
+        reads = [
+            Read(95, [(4, 5), (0, 10), (2, 3), (0, 4)]),
+            Read(100, [(0, 8), (1, 2), (0, 8)]),
+            Read(110, [(0, 5), (3, 4), (0, 30)]),
+            Read(50, [(0, 20)]),
+            Read(105, None),
+        ]
+        matrix = np.zeros((20, 2), dtype=int)
+        counter = samplot.CoverageCounter(100, 20)
+        for i, read in enumerate(reads):
+            samplot.add_coverage(read, matrix, 100, i % 2)
+            counter.add(read, i % 2)
+        self.assertTrue((counter.to_array() == matrix).all())
+        self.assertTrue(matrix.sum() > 0)
+
+    def test_discordant_only(self):
+        ranges = [samplot.genome_interval('4', 115927000, 115934000)]
+        def n_pairs(**kwargs):
+            read_data, _ = samplot.get_read_data(
+                ranges, samplot.PlotOptions(bams=[bam_1], max_depth=0, **kwargs))
+            pairs = read_data['all_pairs'][0]
+            coverage = read_data['all_coverages'][0][0]['4'][0].values
+            return sum(len(p) for p in pairs.values()), coverage
+        # max_depth=0 turns off downsampling, so this counts what was kept
+        all_pairs, all_coverage = n_pairs(discordant_only_min_size=0)
+        discordant, discordant_coverage = n_pairs(discordant_only_min_size=1000)
+        self.assertTrue(0 < discordant < all_pairs)
+        # coverage still counts every read
+        self.assertTrue((all_coverage == discordant_coverage).all())
+
+    def test_read_batch(self):
+        from matplotlib.figure import Figure
+        ax = Figure().add_subplot()
+        batch = samplot.ReadBatch()
+        for i in range(5):
+            batch.add([0.1, 0.5], [i, i], 'black', marker='s')
+        batch.add([0.2, 0.6], [1, 1], 'red', linestyle=':')
+        batch.draw(ax, 3)
+        # two styles: two collections, and one marker line for the first
+        self.assertEqual(len(ax.collections), 2)
+        self.assertEqual(len(ax.lines), 1)
+        self.assertEqual(len(ax.collections[0].get_segments()), 5)
+
+
+class Test_options(unittest.TestCase):
+    def test_argparse_defaults_come_from_plot_options(self):
+        import argparse
+        parser = samplot.add_plot(argparse.ArgumentParser().add_subparsers())
+        defaults = samplot.PlotOptions()
+        dests = set()
+        for action in parser._actions:
+            if action.dest in ('help',):
+                continue
+            dests.add(action.dest)
+            self.assertEqual(action.default, getattr(defaults, action.dest), action.dest)
+        # and every option can be set from the command line
+        import dataclasses
+        self.assertEqual(dests, {f.name for f in dataclasses.fields(defaults)})
+
+    def test_from_namespace(self):
+        import argparse
+        namespace = argparse.Namespace(dpi=72, func=None, command='plot')
+        options = samplot.PlotOptions.from_namespace(namespace)
+        self.assertEqual(options.dpi, 72)
+        self.assertEqual(options.zoom, 500000)
+
+
+class Test_gene_track(unittest.TestCase):
+    def brca1(self):
+        path = samplot.get_gene_track_path('GRCh38')
+        ranges = [samplot.genome_interval('chr17', 43000000, 43180000)]
+        genes = samplot.get_genes(ranges, path)
+        return ranges, genes, [g for g in genes if g.symbol == 'BRCA1'][0]
+
+    def test_get_genes(self):
+        ranges, genes, brca1 = self.brca1()
+        self.assertEqual(brca1.transcript.split('.')[0], 'NM_007294')
+        self.assertEqual(brca1.strand, '-')
+        self.assertEqual(len(brca1.exons), 23)
+        # minus strand: the last exon in genomic order is exon 1
+        self.assertEqual(brca1.exon_numbers()[0], 23)
+        self.assertEqual(brca1.exon_numbers()[-1], 1)
+        self.assertTrue(brca1.start < brca1.cds_start < brca1.cds_end < brca1.end)
+        # genes come back in genomic order, each once
+        self.assertEqual([g.start for g in genes], sorted(g.start for g in genes))
+        self.assertEqual(len(genes), len(set(g.transcript for g in genes)))
+
+    def test_bad_gene_track(self):
+        with self.assertRaises(samplot.SamplotError):
+            samplot.get_gene_track_path('GRCh99')
+
+    def test_plan_rows_do_not_overlap(self):
+        ranges = [samplot.genome_interval('19', 40000000, 43000000)]
+        genes = samplot.get_genes(ranges, samplot.get_gene_track_path('GRCh38'))
+        rows, unlabelled = samplot.plan_gene_track(ranges, genes, False, 8, 6)
+        self.assertEqual(len(rows), samplot.GENE_TRACK_MAX_ROWS)
+        self.assertEqual(sum(len(r) for r in rows) + len(unlabelled), len(genes))
+        self.assertTrue(len(unlabelled) > 0)
+        for row in rows:
+            for left, right in zip(row, row[1:]):
+                self.assertTrue(left['extent'][1] < right['extent'][0])
+            for item in row:
+                self.assertTrue(0 <= item['label_x'] <= 1)
+
+    def test_plot_with_genes(self):
+        import samplot as samplot_package
+        # small region: exon detail; large region: genes only
+        # (the test BAM has no reads here; only the gene track is checked)
+        for end, detail in ((43100000, True), (44000000, False)):
+            fig = samplot_package.plot_region(
+                'chr17', 43090000, end, bams=[bam_1], genes='GRCh38',
+                coverage_only=True)
+            gene_ax = [ax for ax in fig.axes
+                       if ax.get_title(loc='left') == 'GRCh38 MANE Select transcripts']
+            self.assertEqual(len(gene_ax), 1)
+            numbers = [t for t in gene_ax[0].texts if t.get_text().isdigit()]
+            self.assertEqual(len(numbers) > 0, detail)
+
+
+class Test_library(unittest.TestCase):
+    def test_plot_region(self):
+        import io
+        import samplot as samplot_package
+        from matplotlib.figure import Figure
+
+        fig = samplot_package.plot_region(
+            'chr4', 115928730, 115931875,
+            bams=[bam_1],
+            sv_type='DEL',
+            titles=['NA12878'])
+        self.assertIsInstance(fig, Figure)
+        buffer = io.BytesIO()
+        fig.savefig(buffer, format='png', dpi=50)
+        self.assertEqual(buffer.getvalue()[:4], b'\x89PNG')
+
+    def test_plot_region_errors(self):
+        import samplot as samplot_package
+
+        with self.assertRaises(TypeError):
+            samplot_package.plot_region('chr4', 1, 2, bams=[bam_1], not_an_option=1)
+        with self.assertRaises(samplot_package.SamplotError):
+            samplot_package.plot_region('chr4', 1, 2, bams=['missing.bam'], sv_type='DEL')
+
 
 if __name__ == '__main__':
     unittest.main()
