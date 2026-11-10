@@ -176,7 +176,7 @@ options:
 conda install -c bioconda samplot 
 ```
 
-This version (1.4) supports Python 3.9 and later with current releases of
+This version (1.4) supports Python 3.10 and later with current releases of
 matplotlib, numpy and pysam, and can be installed with pip into any
 environment (it needs no pinned dependencies):
 ```

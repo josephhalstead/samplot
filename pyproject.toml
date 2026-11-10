@@ -8,7 +8,7 @@ name = "samplot"
 dynamic = ["version"]
 description = "plotting package for genomic structural variation"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Jonathan Belyeu", email = "jrbelyeu@gmail.com" }]
 classifiers = [
