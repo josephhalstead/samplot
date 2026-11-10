@@ -81,6 +81,13 @@ options:
   --max_coverage_points MAX_COVERAGE_POINTS
                         number of points to plot in coverage axis (the region
                         is averaged into this many bins)
+  --discordant_only_min_size DISCORDANT_ONLY_MIN_SIZE
+                        When the plotted region is at least this many bases,
+                        properly paired reads are only counted towards
+                        coverage: just discordant pairs and split reads are
+                        kept and drawn, which is much faster and less
+                        cluttered for large variants. 0 to always keep normal
+                        pairs (default: 100000)
   --coverage_trend_min_size COVERAGE_TREND_MIN_SIZE
                         Draw a smoothed (rolling median) coverage trend line,
                         which makes copy number breakpoints easier to see,
@@ -193,6 +200,11 @@ fig.savefig(buffer, format="png", dpi=150)
 ```
 Problems with the inputs raise `samplot.SamplotError`.
 
+All settings and their defaults are the fields of `samplot.PlotOptions`,
+which is also where the command line gets its defaults. If you want to build
+the options yourself, `samplot.create_figure(samplot.PlotOptions(...))` is
+what `plot_region` calls.
+
 ## Coverage in wide regions and copy number variants
 Coverage is the mean depth in each of `--max_coverage_points` bins across the
 plot, so wide regions are not spiky. When the plotted region is at least
@@ -203,6 +215,12 @@ every sample, the variant is lightly shaded, and for DEL/DUP/CNV types the
 median depth of the flanks is drawn as a dashed guide with the depth ratio of
 the variant to its flanks (about 0.5x for a heterozygous deletion, 1.5x for a
 duplication) written on the panel.
+
+When the plotted region is at least `--discordant_only_min_size` bases (100kb
+by default, 0 to turn off) properly paired reads are only counted towards
+coverage, and just discordant pairs and split reads are kept and drawn. This
+relies on the aligner setting the proper pair flag. Images are saved at 150
+dpi by default (`--dpi`).
 
 ## Examples: 
 

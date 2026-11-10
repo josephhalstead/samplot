@@ -6,6 +6,8 @@ import random
 import re
 import sys
 from argparse import SUPPRESS
+from dataclasses import dataclass, fields
+from typing import List, Optional
 
 import matplotlib
 import matplotlib.gridspec as gridspec
@@ -14,6 +16,7 @@ import matplotlib.path as mpath
 import matplotlib.ticker as ticker
 import numpy as np
 import pysam
+from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from matplotlib.offsetbox import AnchoredText
@@ -30,6 +33,81 @@ class SamplotError(Exception):
     The command line turns this into an error message and a non-zero exit;
     library callers can catch it.
     """
+
+
+@dataclass
+class PlotOptions:
+    """Every setting of a plot, with its default.
+
+    The fields are the long names of the `samplot plot` arguments (whose
+    defaults come from here), so this is both what the command line parses
+    into and what plot_region() builds from its keyword arguments.
+    """
+
+    # what to plot
+    chrom: Optional[List[str]] = None
+    start: Optional[List[int]] = None
+    end: Optional[List[int]] = None
+    bams: Optional[List[str]] = None
+    sv_type: Optional[str] = None
+    reference: Optional[str] = None
+    titles: Optional[List[str]] = None
+    start_ci: Optional[List[int]] = None
+    end_ci: Optional[List[int]] = None
+    # region shown
+    window: Optional[int] = None
+    zoom: int = 500000
+    # reads
+    z: int = 4
+    max_depth: int = 1
+    include_mqual: int = 1
+    separate_mqual: int = 0
+    long_read: int = 1000
+    min_event_size: int = 20
+    ignore_hp: bool = False
+    coverage_only: bool = False
+    discordant_only_min_size: int = 100000
+    # coverage
+    coverage_tracktype: str = "stack"
+    max_coverage_points: int = 1000
+    max_coverage: int = 0
+    same_yaxis_scales: bool = False
+    coverage_trend_min_size: int = 20000
+    # annotation tracks
+    transcript_file: Optional[str] = None
+    transcript_filename: Optional[str] = None
+    annotation_files: Optional[List[str]] = None
+    annotation_filenames: Optional[List[str]] = None
+    hide_annotation_labels: bool = False
+    annotation_scalar: float = 0.3
+    # appearance
+    plot_height: Optional[int] = None
+    plot_width: Optional[int] = None
+    xaxis_label_fontsize: int = 6
+    yaxis_label_fontsize: int = 6
+    legend_fontsize: int = 6
+    annotation_fontsize: int = 6
+    marker_size: int = 3
+    jitter: float = 0.0
+    dpi: int = 150
+    # output and housekeeping
+    output_file: Optional[str] = None
+    output_dir: str = "."
+    print_args: bool = False
+    json_only: bool = False
+    debug: Optional[str] = None
+    random_seed: int = 9999
+
+    @classmethod
+    def from_namespace(cls, namespace):
+        """Builds options from parsed command line arguments"""
+        return cls(
+            **{
+                f.name: getattr(namespace, f.name)
+                for f in fields(cls)
+                if hasattr(namespace, f.name)
+            }
+        )
 
 
 # Palette. Dark ink for normal/deletion evidence, orange for duplications,
@@ -296,6 +374,54 @@ def add_coverage(read, coverage_matrix, offset, column):
 
 # }}}
 
+class CoverageCounter:
+    """Counts per-base depth over a range from the reads added to it.
+
+    Aligned blocks are recorded as start/end offsets and turned into depth
+    with one cumulative sum at the end, which is much cheaper than
+    incrementing an array slice for every read.
+    """
+
+    def __init__(self, start, length):
+        self.start = start
+        self.length = length
+        self.starts = ([], [])
+        self.ends = ([], [])
+
+    def add(self, read, column):
+        cigartuples = read.cigartuples
+        if not cigartuples:
+            return
+        starts = self.starts[column]
+        ends = self.ends[column]
+        curr_pos = read.reference_start - self.start
+        length = self.length
+        for op, op_length in cigartuples:
+            # M, = and X are aligned bases
+            if op == 0 or op == 7 or op == 8:
+                block_start = curr_pos if curr_pos > 0 else 0
+                curr_pos += op_length
+                block_end = curr_pos if curr_pos < length else length
+                if block_end > block_start:
+                    starts.append(block_start)
+                    ends.append(block_end)
+            # D and N consume the reference without covering it
+            elif op == 2 or op == 3:
+                curr_pos += op_length
+
+    def to_array(self):
+        """Depth as an array of shape (length, 2), one column per quality bin"""
+        values = np.zeros((self.length, 2), dtype=np.int32)
+        for column in (0, 1):
+            if not self.starts[column]:
+                continue
+            steps = np.bincount(
+                self.starts[column], minlength=self.length + 1
+            ) - np.bincount(self.ends[column], minlength=self.length + 1)
+            values[:, column] = np.cumsum(steps[: self.length])
+        return values
+
+
 class RangeCoverage:
     """Per-base coverage over one fetched range.
 
@@ -382,27 +508,15 @@ def is_copy_number_type(sv_type):
 
 
 # {{{def plot_coverage(coverage,
-def plot_coverage(
-    coverage,
-    ax,
-    ranges,
-    hp_count,
-    max_coverage,
-    tracktype,
-    yaxis_label_fontsize,
-    max_coverage_points,
-    sv=None,
-    sv_type=None,
-    coverage_trend_min_size=20000,
-):
+def plot_coverage(coverage, ax, ranges, hp_count, max_coverage, options, sv=None):
     """Plots high and low quality coverage for the region
 
     User may specify a preference between stacked and superimposed 
     superimposed may cause unexpected behavior if low-quality depth is
     greater than high 
 
-    Depth is averaged into at most max_coverage_points bins per range. For
-    wide regions (>= coverage_trend_min_size bases plotted, 0 to disable) a
+    Depth is averaged into at most options.max_coverage_points bins per range. For
+    wide regions (>= options.coverage_trend_min_size bases plotted, 0 to disable) a
     rolling median trend line is drawn over the binned depth, and for copy
     number variants the flanking depth is marked with a dashed guide and the
     inside/flank depth ratio is written on the panel.
@@ -414,7 +528,7 @@ def plot_coverage(
     in_sv = []
 
     same_chrom_sv = bool(sv) and strip_chr(sv[0].chrm) == strip_chr(sv[-1].chrm)
-    points_per_range = max(1, int(max_coverage_points / len(ranges)))
+    points_per_range = max(1, int(options.max_coverage_points / len(ranges)))
 
     for i in range(len(ranges)):
         r = ranges[i]
@@ -445,10 +559,10 @@ def plot_coverage(
 
     plotted_bases = sum(r.end - r.start for r in ranges)
     draw_trend = (
-        tracktype is not None
-        and tracktype != "none"
-        and coverage_trend_min_size
-        and plotted_bases >= coverage_trend_min_size
+        options.coverage_tracktype is not None
+        and options.coverage_tracktype != "none"
+        and options.coverage_trend_min_size
+        and plotted_bases >= options.coverage_trend_min_size
         and len(cover_y_all) >= 50
     )
 
@@ -486,7 +600,7 @@ def plot_coverage(
     # between two ranges
     for sl in range_slices:
         x = cover_x[sl]
-        if tracktype == "stack":
+        if options.coverage_tracktype == "stack":
             ax2.fill_between(
                 x, cover_y_highqual[sl], bottom_fill[sl],
                 color=GREY, step="mid", alpha=0.55, linewidth=0,
@@ -495,7 +609,7 @@ def plot_coverage(
                 x, cover_y_all[sl], cover_y_highqual[sl],
                 color=GREY, step="mid", alpha=0.3, linewidth=0,
             )
-        elif tracktype == "superimpose":
+        elif options.coverage_tracktype == "superimpose":
             ax2.fill_between(
                 x, cover_y_lowqual[sl], bottom_fill[sl],
                 color=GREY, step="mid", alpha=0.3, linewidth=0,
@@ -504,17 +618,17 @@ def plot_coverage(
                 x, cover_y_highqual[sl], cover_y_lowqual[sl],
                 color=GREY, step="mid", alpha=0.55, linewidth=0,
             )
-        ## tracktype==None also allowed
+        ## options.coverage_tracktype==None also allowed
 
         if trend is not None:
             ax2.plot(x, trend[sl], "-", color=INK, lw=0.9, alpha=0.85, zorder=4)
 
     # mark the depth of the flanks and say how the variant compares to it
     if (
-        tracktype is not None
-        and tracktype != "none"
+        options.coverage_tracktype is not None
+        and options.coverage_tracktype != "none"
         and hp_count == 1
-        and is_copy_number_type(sv_type)
+        and is_copy_number_type(options.sv_type)
         and in_sv.any()
         and (~in_sv).any()
     ):
@@ -541,7 +655,7 @@ def plot_coverage(
     tick_count = 6 if hp_count == 1 else 3
     ax2.yaxis.set_major_locator(ticker.LinearLocator(tick_count))
     ax2.yaxis.set_major_formatter(ticker.FormatStrFormatter("%g"))
-    ax2.tick_params(axis="y", colors=GREY, labelsize=yaxis_label_fontsize)
+    ax2.tick_params(axis="y", colors=GREY, labelsize=options.yaxis_label_fontsize)
     ax2.set_axisbelow(True)
     ax2.grid(True, axis="y")
     for spine in ax2.spines.values():
@@ -883,8 +997,50 @@ def jitter(value, bounds: float = 0.1) -> float:
     return value * (1 + bounds * random.uniform(-1, 1))
 
 
+class ReadBatch:
+    """Collects the lines for reads so each style is drawn in one go.
+
+    One matplotlib artist per read is slow to build and to render when there
+    are thousands of them; here every line with the same style goes into a
+    single LineCollection (plus one marker-only line for the end markers).
+    """
+
+    def __init__(self):
+        self.segments = {}
+
+    def add(self, p, y, color, linestyle="-", lw=0.5, alpha=0.25, marker=None, zorder=2):
+        style = (color, linestyle, lw, alpha, marker, zorder)
+        self.segments.setdefault(style, []).append(((p[0], y[0]), (p[1], y[1])))
+
+    def draw(self, ax, marker_size):
+        for style, segments in self.segments.items():
+            color, linestyle, lw, alpha, marker, zorder = style
+            ax.add_collection(
+                LineCollection(
+                    segments,
+                    colors=color,
+                    linestyles=linestyle,
+                    linewidths=lw,
+                    alpha=alpha,
+                    zorder=zorder,
+                )
+            )
+            if marker:
+                ax.plot(
+                    [point[0] for segment in segments for point in segment],
+                    [point[1] for segment in segments for point in segment],
+                    linestyle="none",
+                    marker=marker,
+                    markersize=marker_size,
+                    color=color,
+                    alpha=alpha,
+                    zorder=zorder,
+                )
+        self.segments = {}
+
+
 # {{{def plot_pair_plan(ranges, step, ax):
-def plot_pair_plan(ranges, step, ax, marker_size, jitter_bounds):
+def plot_pair_plan(ranges, step, ax, marker_size, jitter_bounds, batch=None):
     p = [
         map_genome_point_to_range_points(
             ranges, step.start_pos.chrm, step.start_pos.start
@@ -910,18 +1066,13 @@ def plot_pair_plan(ranges, step, ax, marker_size, jitter_bounds):
     READ_TYPES_USED[event_type] = True
     color = COLORS[event_type]
 
-    # plot the individual pair
-    ax.plot(
-        p,
-        [y, y],
-        "-",
-        color=color,
-        alpha=0.25,
-        lw=0.5,
-        marker="s",
-        markersize=marker_size,
-        zorder=10,
-    )
+    # plot the individual pair (drawn here unless the caller is batching)
+    own_batch = batch is None
+    if own_batch:
+        batch = ReadBatch()
+    batch.add(p, [y, y], color, linestyle="-", lw=0.5, marker="s", zorder=10)
+    if own_batch:
+        batch.draw(ax, marker_size)
 
     return True
 
@@ -942,8 +1093,10 @@ def plot_pairs(
 
     max_event, steps = plan
 
+    batch = ReadBatch()
     for step in steps:
-        plot_pair_plan(ranges, step, ax, marker_size, jitter_bounds)
+        plot_pair_plan(ranges, step, ax, marker_size, jitter_bounds, batch)
+    batch.draw(ax, marker_size)
 
     if not curr_min_insert_size or curr_min_insert_size > max_event:
         curr_min_insert_size = max_event
@@ -1203,7 +1356,7 @@ def get_splits_plan(ranges, splits, linked_plan=False):
 
 
 # {{{def plot_split(split, y, ax, ranges):
-def plot_split_plan(ranges, step, ax, marker_size, jitter_bounds):
+def plot_split_plan(ranges, step, ax, marker_size, jitter_bounds, batch=None):
     p = [
         map_genome_point_to_range_points(
             ranges, step.start_pos.chrm, step.start_pos.start
@@ -1229,16 +1382,12 @@ def plot_split_plan(ranges, step, ax, marker_size, jitter_bounds):
     READ_TYPES_USED[event_type] = True
     color = COLORS[event_type]
 
-    ax.plot(
-        p,
-        [y, y],
-        ":",
-        color=color,
-        alpha=0.25,
-        lw=1,
-        marker="o",
-        markersize=marker_size,
-    )
+    own_batch = batch is None
+    if own_batch:
+        batch = ReadBatch()
+    batch.add(p, [y, y], color, linestyle=":", lw=1, marker="o")
+    if own_batch:
+        batch.draw(ax, marker_size)
 
 
 # }}}
@@ -1256,8 +1405,10 @@ def plot_splits(
 
     max_event, steps = plan
 
+    batch = ReadBatch()
     for step in steps:
-        plot_split_plan(ranges, step, ax, marker_size, jitter_bounds)
+        plot_split_plan(ranges, step, ax, marker_size, jitter_bounds, batch)
+    batch.draw(ax, marker_size)
 
     if not curr_min_insert_size or curr_min_insert_size > max_event:
         curr_min_insert_size = max_event
@@ -1942,6 +2093,7 @@ def plot_linked_reads(
 ):
     """Plots all LinkedReads for the region
     """
+    batch = ReadBatch()
     for linked_read in linked_reads:
         plan = get_linked_plan(ranges, pairs, splits, linked_reads, linked_read)
 
@@ -1972,18 +2124,19 @@ def plot_linked_reads(
 
             READ_TYPES_USED["Linked read"] = True
 
-            ax.plot(
-                p, [insert_size, insert_size], "-", color=COLORS["Linked read"], alpha=0.75, lw=0.25
+            batch.add(
+                p, [insert_size, insert_size], COLORS["Linked read"], lw=0.25, alpha=0.75
             )
 
         for pair_step in steps[0].info["PAIR_STEPS"]:
             pair_step.info["INSERTSIZE"] = insert_size
-            plot_pair_plan(ranges, pair_step, ax, marker_size, jitter_bounds)
+            plot_pair_plan(ranges, pair_step, ax, marker_size, jitter_bounds, batch)
 
         for split_step in steps[0].info["SPLIT_STEPS"]:
             split_step.info["INSERTSIZE"] = insert_size
-            plot_split_plan(ranges, split_step, ax, marker_size, jitter_bounds)
+            plot_split_plan(ranges, split_step, ax, marker_size, jitter_bounds, batch)
 
+    batch.draw(ax, marker_size)
     return [curr_min_insert_size, curr_max_insert_size]
 
 
@@ -1997,6 +2150,7 @@ def plot_long_reads(long_reads, ax, ranges, curr_min_insert_size, curr_max_inser
     Path = mpath.Path
 
     colors = COLORS
+    batch = ReadBatch()
 
     for read_name in long_reads:
         long_read_plan = get_long_read_plan(read_name, long_reads, ranges)
@@ -2027,14 +2181,7 @@ def plot_long_reads(long_reads, ax, ranges, curr_min_insert_size, curr_max_inser
             READ_TYPES_USED[event_type] = True
 
             if event_type == "Align":
-                ax.plot(
-                    p,
-                    [max_gap, max_gap],
-                    "-",
-                    color=colors[event_type],
-                    alpha=0.25,
-                    lw=1,
-                )
+                batch.add(p, [max_gap, max_gap], colors[event_type], lw=1)
 
                 curr_max_insert_size = max(curr_max_insert_size, max_gap)
             else:
@@ -2063,6 +2210,7 @@ def plot_long_reads(long_reads, ax, ranges, curr_min_insert_size, curr_max_inser
                 # add some room for the bend line
                 curr_max_insert_size = max(curr_max_insert_size, max_gap_offset)
 
+    batch.draw(ax, 0)
     return [curr_min_insert_size, curr_max_insert_size]
 
 
@@ -2156,7 +2304,6 @@ def add_plot(parent_parser):
         "-z",
         "--z",
         type=int,
-        default=4,
         help="Number of stdevs from the mean (default 4)",
         required=False,
     )
@@ -2203,7 +2350,6 @@ def add_plot(parent_parser):
     parser.add_argument(
         "--output_dir",
         type=str,
-        default=".",
         help="Output directory name. Defaults to working dir. "
         +"Ignored if --output_file is set",
         required=False,
@@ -2248,7 +2394,6 @@ def add_plot(parent_parser):
         "--max_depth",
         type=int,
         help="Max number of normal pairs to plot",
-        default=1,
         required=False,
     )
 
@@ -2298,7 +2443,6 @@ def add_plot(parent_parser):
         help="number of points to plot in coverage axis (the region is averaged into this many bins)",
         required=False,
         type=int,
-        default=1000,
     )
 
     def bed_file(annotation_file):
@@ -2343,7 +2487,6 @@ def add_plot(parent_parser):
         type=str,
         help="type of track to use for low MAPQ " + "coverage plot.",
         choices=["stack", "superimpose", "none"],
-        default="stack",
         required=False,
     )
 
@@ -2351,7 +2494,6 @@ def add_plot(parent_parser):
         "-a",
         "--print_args",
         action="store_true",
-        default=False,
         help="Print commandline arguments to a json file, useful with PlotCritic",
         required=False,
     )
@@ -2369,7 +2511,6 @@ def add_plot(parent_parser):
         "--include_mqual",
         type=int,
         help="Min mapping quality of reads to be included in plot (default 1)",
-        default=1,
         required=False,
     )
 
@@ -2379,7 +2520,6 @@ def add_plot(parent_parser):
         help="coverage from reads with MAPQ <= separate_mqual "
         + "plotted in lighter grey. To disable, "
         + "pass in negative value",
-        default=0,
         required=False,
     )
 
@@ -2387,7 +2527,6 @@ def add_plot(parent_parser):
         "-j",
         "--json_only",
         action="store_true",
-        default=False,
         help="Create only the json file, not the " + "image plot",
         required=False,
     )
@@ -2415,7 +2554,6 @@ def add_plot(parent_parser):
     parser.add_argument(
         "--long_read",
         type=int,
-        default=1000,
         help="Min length of a read to be treated as a " + "long-read (default 1000)",
         required=False,
     )
@@ -2429,7 +2567,6 @@ def add_plot(parent_parser):
     parser.add_argument(
         "--min_event_size",
         type=int,
-        default=20,
         help="Min size of an event in long-read " + "CIGAR to include (default 20)",
         required=False,
     )
@@ -2437,7 +2574,6 @@ def add_plot(parent_parser):
     parser.add_argument(
         "--xaxis_label_fontsize",
         type=int,
-        default=6,
         help="Font size for X-axis labels (default 6)",
         required=False,
     )
@@ -2445,7 +2581,6 @@ def add_plot(parent_parser):
     parser.add_argument(
         "--yaxis_label_fontsize",
         type=int,
-        default=6,
         help="Font size for Y-axis labels (default 6)",
         required=False,
     )
@@ -2453,7 +2588,6 @@ def add_plot(parent_parser):
     parser.add_argument(
         "--legend_fontsize",
         type=int,
-        default=6,
         help="Font size for legend labels (default 6)",
         required=False,
     )
@@ -2461,7 +2595,6 @@ def add_plot(parent_parser):
     parser.add_argument(
         "--annotation_fontsize",
         type=int,
-        default=6,
         help="Font size for annotation labels (default 6)",
         required=False,
     )
@@ -2469,7 +2602,6 @@ def add_plot(parent_parser):
     parser.add_argument(
         "--hide_annotation_labels",
         action="store_true",
-        default=False,
         help="Hide the label (fourth column text) "
         + "from annotation files, useful for regions "
         + "with many annotations",
@@ -2479,14 +2611,12 @@ def add_plot(parent_parser):
     parser.add_argument(
         "--coverage_only",
         action="store_true",
-        default=False,
         help="Hide all reads and show only coverage",
         required=False,
     )
 
     parser.add_argument(
         "--max_coverage",
-        default=0,
         type=int,
         help="apply a maximum coverage cutoff. Unlimited by default",
     )
@@ -2494,7 +2624,6 @@ def add_plot(parent_parser):
     parser.add_argument(
         "--same_yaxis_scales",
         action="store_true",
-        default=False,
         help="Set the scales of the Y axes to the " + "max of all",
         required=False,
     )
@@ -2502,7 +2631,6 @@ def add_plot(parent_parser):
     parser.add_argument(
         "--marker_size",
         type=int,
-        default=3,
         help="Size of marks on pairs and splits (default 3)",
         required=False,
     )
@@ -2511,7 +2639,6 @@ def add_plot(parent_parser):
         type=float,
         nargs="?",
         const=0.08,
-        default=0.0,
         help="Add uniform random noise to insert sizes. This can be helpful "
              "to resolve overlapping entries. Either a custom value (<1.0) is "
              "supplied or %(const)s will be used."
@@ -2519,21 +2646,18 @@ def add_plot(parent_parser):
     parser.add_argument(
         "--dpi",
         type=int,
-        default=300,
         help="Dots per inches (pixel count, default 300)",
         required=False,
     )
     parser.add_argument(
         "--annotation_scalar",
         type=float,
-        default=.3,
         help="scaling factor for the optional annotation/trascript tracks",
         required=False,
     )
     parser.add_argument(
         "--zoom",
         type=int,
-        default=500000,
         help="Only show +- zoom amount around breakpoints, "
             +"much faster for large regions. "
             +"Ignored if region smaller than --zoom (default 500000)",
@@ -2547,9 +2671,18 @@ def add_plot(parent_parser):
         required=False
     )
     parser.add_argument(
+        "--discordant_only_min_size",
+        type=int,
+        help="When the plotted region is at least this many bases, properly "
+        + "paired reads are only counted towards coverage: just discordant "
+        + "pairs and split reads are kept and drawn, which is much faster "
+        + "and less cluttered for large variants. 0 to always keep "
+        + "normal pairs",
+        required=False,
+    )
+    parser.add_argument(
         "--coverage_trend_min_size",
         type=int,
-        default=20000,
         help="Draw a smoothed (rolling median) coverage trend line, which makes "
         + "copy number breakpoints easier to see, when the plotted region is at "
         + "least this many bases. 0 to never draw it",
@@ -2558,10 +2691,18 @@ def add_plot(parent_parser):
     parser.add_argument(
         "--random-seed",
         type=int,
-        default=9999,
         help=SUPPRESS,
     )
-    parser.set_defaults(func=plot)
+    # every default lives on PlotOptions
+    defaults = PlotOptions()
+    parser.set_defaults(
+        func=plot,
+        **{
+            action.dest: getattr(defaults, action.dest)
+            for action in parser._actions
+            if hasattr(defaults, action.dest)
+        }
+    )
     return parser
 
 
@@ -2600,18 +2741,7 @@ def estimate_fragment_len(bam, reference):
 
 
 # {{{def set_plot_dimensions(sv,
-def set_plot_dimensions(
-    sv,
-    sv_type,
-    arg_plot_height,
-    arg_plot_width,
-    bams,
-    reference,
-    annotation_files,
-    transcript_file,
-    arg_window,
-    zoom,
-):
+def set_plot_dimensions(sv, options):
     """Chooses appropriate dimensions for the plot
 
     Includes the number of samples, whether a variant type is included, and
@@ -2623,23 +2753,23 @@ def set_plot_dimensions(
 
     plot_height = 5
     plot_width = 8
-    if arg_plot_height:
-        plot_height = arg_plot_height
+    if options.plot_height:
+        plot_height = options.plot_height
     else:
-        num_subplots = len(bams)
-        if annotation_files:
-            num_subplots += 0.3 * len(annotation_files)
-        if transcript_file:
+        num_subplots = len(options.bams)
+        if options.annotation_files:
+            num_subplots += 0.3 * len(options.annotation_files)
+        if options.transcript_file:
             num_subplots += 0.3
         plot_height = 2 + num_subplots
 
-    if arg_plot_width:
-        plot_width = arg_plot_width
+    if options.plot_width:
+        plot_width = options.plot_width
 
     window = 0
     ranges = []
-    if arg_window:
-        window = arg_window
+    if options.window:
+        window = options.window
 
     """ 
     Several things determine the window size. 
@@ -2648,19 +2778,19 @@ def set_plot_dimensions(
         1) it is directly set
         2) it is not directly set
            2.1) single interval SV
-           2.2) zoom set
+           2.2) options.zoom set
            2.3) 2-interval SV
     """
     # if an SV type is given, then expand the window around its bounds
-    if sv_type:
+    if options.sv_type:
         # if the sv has one interval then set the window proportional
         # to sv size and set one range
         if len(sv) == 1:
-            if arg_window:
-                window = arg_window
+            if options.window:
+                window = options.window
             else:
                 window = int((sv[0].end - sv[0].start) / 2)
-                frag_len = estimate_fragment_len(bams[0], reference)
+                frag_len = estimate_fragment_len(options.bams[0], options.reference)
 
                 if (0 < frag_len) and (window < 1.5 * frag_len):
                     old_window = window
@@ -2678,9 +2808,9 @@ def set_plot_dimensions(
                 )
             ]
 
-            # if region is larger than zoom, set window to zoom and set two ranges
-            if window >= zoom:
-                window = zoom
+            # if region is larger than options.zoom, set window to options.zoom and set two ranges
+            if window >= options.zoom:
+                window = options.zoom
                 ranges = [
                     genome_interval(
                         sv[0].chrm,
@@ -2692,10 +2822,10 @@ def set_plot_dimensions(
                     ),
                 ]
         elif len(sv) == 2:
-            if arg_window:
-                window = arg_window
-            elif zoom:
-                window = zoom
+            if options.window:
+                window = options.window
+            elif options.zoom:
+                window = options.zoom
             else:
                 window = 1000
 
@@ -2718,33 +2848,28 @@ def set_plot_dimensions(
 # }}}
 
 # {{{def get_read_data(ranges,
-def get_read_data(
-    ranges,
-    bams,
-    reference,
-    separate_mqual,
-    include_mqual,
-    coverage_only,
-    long_read_length,
-    min_event_size,
-    same_yaxis_scales,
-    max_depth,
-    z_score,
-    ignore_hp,
-):
+def get_read_data(ranges, options):
     """Reads alignment files to extract reads for the region
 
-    Region and alignment files given with chrom, start, end, bams
-    If CRAM files are used, reference must be provided
-    Reads with mapping quality below include_mqual will not be retrieved
-    If coverage_only, reads are not kept and used only for checking
-    coverage Reads longer than long_read_length will be treated as long
-    reads Max coverages values will be set to same value for all samples if
-    same_yaxis_scales If max_depth, only max_depth reads will be retrieved,
-    although all will be included in coverage If PairedEnd read insert size
-    is greater than z_score standard deviations from mean, read will be
-    treated as discordant
+    Uses these options: bams and reference (needed for CRAM); include_mqual
+    (reads below it are ignored); separate_mqual; coverage_only (reads only
+    count towards coverage); long_read (reads at least this long are treated
+    as long reads); min_event_size; ignore_hp; max_depth and z (normal pairs
+    are downsampled to max_depth, pairs with an insert size over z standard
+    deviations from the mean are discordant and always kept);
+    same_yaxis_scales; and discordant_only_min_size (when the ranges cover at
+    least this many bases, properly paired reads only count towards coverage
+    and just discordant pairs and split reads are kept).
+
+    Returns the read data and the coverage to scale every sample to (0
+    unless same_yaxis_scales).
     """
+
+    plotted_bases = sum(r.end - r.start for r in ranges)
+    discordant_only = bool(
+        options.discordant_only_min_size
+        and plotted_bases >= options.discordant_only_min_size
+    )
 
     all_pairs = []
     all_splits = []
@@ -2754,8 +2879,8 @@ def get_read_data(
 
     max_coverage = 0
 
-    for bam_file_name in bams:
-        bam_file = open_alignment_file(bam_file_name, reference)
+    for bam_file_name in options.bams:
+        bam_file = open_alignment_file(bam_file_name, options.reference)
 
         pairs = {}
         splits = {}
@@ -2788,6 +2913,11 @@ def get_read_data(
             # in the second column.
             range_len = range_end - range_start
             range_hp_coverage = {}
+            include_mqual = options.include_mqual
+            separate_mqual = options.separate_mqual
+            coverage_only = options.coverage_only
+            long_read_length = options.long_read
+            ignore_hp = options.ignore_hp
 
             for read in bam_iter:
                 if (
@@ -2800,8 +2930,15 @@ def get_read_data(
 
                 if not coverage_only:
                     if read.query_length >= long_read_length:
-                        add_long_reads(bam_file, read, long_reads, min_event_size, ignore_hp)
-                    else:
+                        add_long_reads(
+                            bam_file, read, long_reads, options.min_event_size, ignore_hp
+                        )
+                    elif not (
+                        discordant_only
+                        and read.is_proper_pair
+                        and not read.has_tag("SA")
+                        and not read.has_tag("MI")
+                    ):
                         add_pair_end(bam_file, read, pairs, linked_reads, ignore_hp)
                         add_split(read, splits, bam_file, linked_reads, ignore_hp)
 
@@ -2809,11 +2946,12 @@ def get_read_data(
                 hp = 0 if ignore_hp or not read.has_tag("HP") else read.get_tag("HP")
                 column = 0 if separate_mqual and (read.mapping_quality > separate_mqual) else 1
                 if hp not in range_hp_coverage:
-                    range_hp_coverage[hp] = np.zeros((range_len, 2), dtype=np.int32)
-                add_coverage(read, range_hp_coverage[hp], range_start, column)
+                    range_hp_coverage[hp] = CoverageCounter(range_start, range_len)
+                range_hp_coverage[hp].add(read, column)
 
             # Keep the coverage of each haplotype that has any
-            for hp, range_coverage in range_hp_coverage.items():
+            for hp, counter in range_hp_coverage.items():
+                range_coverage = counter.to_array()
                 if not range_coverage.any():
                     continue
                 if hp not in coverage:
@@ -2858,12 +2996,14 @@ def get_read_data(
         "all_linked_reads": all_linked_reads,
     }
 
-    # Sample +/- pairs in the normal insert size range
-    if max_depth:
+    # Sample +/- pairs in the normal insert size range. Not needed when only
+    # discordant pairs were kept (and the insert size statistics that
+    # downsampling uses to spot discordant pairs would be wrong)
+    if options.max_depth and not discordant_only:
         read_data["all_pairs"] = downsample_pairs(
-            max_depth, z_score, read_data["all_pairs"]
+            options.max_depth, options.z, read_data["all_pairs"]
         )
-    if not same_yaxis_scales:
+    if not options.same_yaxis_scales:
         max_coverage = 0
     return read_data, max_coverage
 
@@ -2950,41 +3090,18 @@ def sv_spans_ranges(sv, ranges):
 
 
 # {{{def plot_samples(ranges,
-def plot_samples(
-    ranges,
-    read_data,
-    grid,
-    ax_i,
-    number_of_axes,
-    bams,
-    chrom,
-    coverage_tracktype,
-    titles,
-    same_yaxis_scales,
-    xaxis_label_fontsize,
-    yaxis_label_fontsize,
-    annotation_files,
-    transcript_file,
-    max_coverage_points,
-    max_coverage,
-    marker_size,
-    coverage_only,
-    jitter_bounds,
-    sv=None,
-    sv_type=None,
-    coverage_trend_min_size=20000,
-):
+def plot_samples(ranges, read_data, grid, ax_i, number_of_axes, options, max_coverage, sv=None):
 
     """Plots all samples
     """
     max_insert_size = 0
     fig = grid.figure
     x_ticks, x_tick_labels = get_xaxis_ticks(ranges)
-    breakpoints = get_breakpoint_points(sv, ranges) if sv and sv_type else []
+    breakpoints = get_breakpoint_points(sv, ranges) if sv and options.sv_type else []
 
     # If jitter > 0.08 is use we need to shift the ylim a bit to not hide any entires.
-    ylim_margin = max(1.02 + jitter_bounds, 1.10)
-    for i in range(len(bams)):
+    ylim_margin = max(1.02 + options.jitter, 1.10)
+    for i in range(len(options.bams)):
         hps = set_haplotypes(read_data["all_coverages"][i])
         inner_axs = gridspec.GridSpecFromSubplotSpec(
             len(hps), 1, subplot_spec=grid[ax_i], wspace=0.0, hspace=0.5
@@ -3021,17 +3138,7 @@ def plot_samples(
                 curr_coverage = read_data["all_coverages"][i][hp]
 
             cover_ax = plot_coverage(
-                curr_coverage,
-                curr_ax,
-                ranges,
-                len(hps),
-                max_coverage,
-                coverage_tracktype,
-                yaxis_label_fontsize,
-                max_coverage_points,
-                sv=sv,
-                sv_type=sv_type,
-                coverage_trend_min_size=coverage_trend_min_size,
+                curr_coverage, curr_ax, ranges, len(hps), max_coverage, options, sv=sv
             )
 
             if len(curr_linked_reads) > 0:
@@ -3043,8 +3150,8 @@ def plot_samples(
                     ranges,
                     curr_min_insert_size,
                     curr_max_insert_size,
-                    marker_size,
-                    jitter_bounds
+                    options.marker_size,
+                    options.jitter
                 )
             elif len(curr_long_reads) > 0:
                 curr_min_insert_size, curr_max_insert_size = plot_long_reads(
@@ -3053,7 +3160,7 @@ def plot_samples(
                     ranges,
                     curr_min_insert_size,
                     curr_max_insert_size,
-                    jitter_bounds
+                    options.jitter
                 )
             else:
                 curr_min_insert_size, curr_max_insert_size = plot_pairs(
@@ -3062,8 +3169,8 @@ def plot_samples(
                     ranges,
                     curr_min_insert_size,
                     curr_max_insert_size,
-                    marker_size,
-                    jitter_bounds
+                    options.marker_size,
+                    options.jitter
                 )
 
                 curr_min_insert_size, curr_max_insert_size = plot_splits(
@@ -3072,8 +3179,8 @@ def plot_samples(
                     ranges,
                     curr_min_insert_size,
                     curr_max_insert_size,
-                    marker_size,
-                    jitter_bounds,
+                    options.marker_size,
+                    options.jitter,
                 )
 
             cover_axs[hp] = cover_ax
@@ -3083,10 +3190,10 @@ def plot_samples(
         # {{{ set axis parameters
         # set the axis title to be either one passed in or filename
         curr_ax = axs[hps[0]]
-        if titles and len(titles) == len(bams):
-            curr_ax.set_title(titles[i], fontsize=8, loc="left", color=INK)
+        if options.titles and len(options.titles) == len(options.bams):
+            curr_ax.set_title(options.titles[i], fontsize=8, loc="left", color=INK)
         else:
-            curr_ax.set_title(os.path.basename(bams[i]), fontsize=8, loc="left", color=INK)
+            curr_ax.set_title(os.path.basename(options.bams[i]), fontsize=8, loc="left", color=INK)
 
         if len(axs) > 1:
             for j in axs:
@@ -3107,14 +3214,14 @@ def plot_samples(
             curr_ax.set_xlim([0, 1])
             # round the top of the axis up so the tick labels are round numbers
             y_intervals = 5 if len(hps) == 1 else 2
-            if same_yaxis_scales:
+            if options.same_yaxis_scales:
                 y_top = max(1, max_insert_size * ylim_margin)
             else:
                 y_top = max(1, curr_max_insert_size * ylim_margin)
             curr_ax.set_ylim([0, nice_axis_top(y_top, y_intervals)])
             for spine in curr_ax.spines.values():
                 spine.set_visible(False)
-            curr_ax.tick_params(axis="y", labelsize=yaxis_label_fontsize)
+            curr_ax.tick_params(axis="y", labelsize=options.yaxis_label_fontsize)
             # if there's one hp, 6 ticks fit. Otherwise, do 3
             tick_count = 6 if len(hps) == 1 else 3
             curr_ax.yaxis.set_major_locator(ticker.LinearLocator(tick_count))
@@ -3123,7 +3230,7 @@ def plot_samples(
             curr_ax.tick_params(axis="both", length=0)
             curr_ax.set_xticks(x_ticks)
             curr_ax.set_xticklabels([])
-            if coverage_only:
+            if options.coverage_only:
                 curr_ax.yaxis.set_visible(False)
 
             # mark the breakpoints down every panel, and lightly shade the
@@ -3131,7 +3238,7 @@ def plot_samples(
             in_view = [b for b in breakpoints if b is not None]
             for b in in_view:
                 curr_ax.axvline(
-                    b, color=sv_color(sv_type), linestyle="--", linewidth=0.8,
+                    b, color=sv_color(options.sv_type), linestyle="--", linewidth=0.8,
                     alpha=0.8, zorder=1,
                 )
             if breakpoints:
@@ -3141,19 +3248,19 @@ def plot_samples(
                 ]
                 if span[1] > span[0] and (in_view or sv_spans_ranges(sv, ranges)):
                     curr_ax.axvspan(
-                        span[0], span[1], color=sv_color(sv_type), alpha=0.07,
+                        span[0], span[1], color=sv_color(options.sv_type), alpha=0.07,
                         linewidth=0, zorder=0,
                     )
 
         last_sample_num = number_of_axes - 1
-        if annotation_files:
-            last_sample_num -= len(annotation_files)
-        if transcript_file:
+        if options.annotation_files:
+            last_sample_num -= len(options.annotation_files)
+        if options.transcript_file:
             last_sample_num -= 1
 
         if ax_i == last_sample_num:
             curr_ax = axs[hps[-1]]
-            curr_ax.set_xticklabels(x_tick_labels, fontsize=xaxis_label_fontsize)
+            curr_ax.set_xticklabels(x_tick_labels, fontsize=options.xaxis_label_fontsize)
             chrms = list(dict.fromkeys(x.chrm for x in ranges))
             curr_ax.set_xlabel(
                 "Chromosomal position on " + "/".join(chrms), fontsize=8
@@ -3253,37 +3360,37 @@ def plot_legend(fig, legend_fontsize, marker_size):
 # }}}
 
 # {{{def create_gridspec(bams, transcript_file, annotation_files, sv_type ):
-def create_gridspec(bams, transcript_file, annotation_files, sv_type, read_data, annotation_scalar, fig=None):
+def create_gridspec(options, read_data, fig=None):
     """Helper function for creation of a correctly-sized GridSpec instance
     """
     # give one axis to display each sample
-    num_ax = len(bams)
+    num_ax = len(options.bams)
 
     # add another if we are displaying the SV
-    if sv_type:
+    if options.sv_type:
         num_ax += 1
 
     # add another if a annotation file is given
-    if transcript_file:
+    if options.transcript_file:
         num_ax += 1
 
-    if annotation_files:
-        num_ax += len(annotation_files)
+    if options.annotation_files:
+        num_ax += len(options.annotation_files)
 
     # set the relative sizes for each
     ratios = []
-    if sv_type:
+    if options.sv_type:
         ratios = [1]
 
-    for i in range(len(bams)):
+    for i in range(len(options.bams)):
         ratios.append(len(read_data["all_coverages"][i]) * 3)
         if len(read_data["all_coverages"]) > 0:
             ratios[-1] = 9
 
-    if annotation_files:
-        ratios += [annotation_scalar] * len(annotation_files)
-    if transcript_file:
-        ratios.append(annotation_scalar * 3)
+    if options.annotation_files:
+        ratios += [options.annotation_scalar] * len(options.annotation_files)
+    if options.transcript_file:
+        ratios.append(options.annotation_scalar * 3)
 
     if fig is None:
         fig = Figure()
@@ -3337,11 +3444,13 @@ def get_plot_annotation_plan(ranges, annotation_file):
 # }}}
 
 # {{{def plot_annotations(annotation_files, chrom, start, end,
-def plot_annotations(
-    annotation_files, annotation_filenames, ranges, hide_annotation_labels, annotation_fontsize, grid, ax_i, annotation_scalar,
-):
+def plot_annotations(options, ranges, grid, ax_i):
     """Plots annotation information from region 
     """
+    annotation_files = options.annotation_files
+    annotation_filenames = options.annotation_filenames
+    hide_annotation_labels = options.hide_annotation_labels
+    annotation_fontsize = options.annotation_fontsize
     if not annotation_filenames:
         annotation_filenames = []
         for annotation_file in annotation_files:
@@ -3554,11 +3663,12 @@ def get_transcript_plan(ranges, transcript_file):
 # }}}
 
 # {{{ def plot_transcript(transcript_file, chrom, start, end,
-def plot_transcript(
-    transcript_file, transcript_filename, ranges, grid, annotation_fontsize, xaxis_label_fontsize, annotation_scalar,
-):
+def plot_transcript(options, ranges, grid):
     """Plots a transcript file annotation
     """
+    transcript_file = options.transcript_file
+    transcript_filename = options.transcript_filename
+    annotation_fontsize = options.annotation_fontsize
     if not transcript_filename:
         transcript_filename = os.path.basename(transcript_file)
     transcript_idx = 0
@@ -3670,8 +3780,7 @@ def plot_transcript(
 def create_figure(options):
     """Builds the samplot figure described by options and returns it.
 
-    options is a namespace with the same attributes as the `samplot plot`
-    command line arguments (see default_options()). Nothing is written to
+    options is a PlotOptions. Nothing is written to
     disk; this is the shared core of the command line and of plot_region().
     Raises SamplotError if the plot can't be made.
     """
@@ -3700,41 +3809,17 @@ def create_figure(options):
             )
         )
 
-    sv = []
-    for i in range(len(options.chrom)):
-        options.chrom[i] = strip_chr(options.chrom[i])
-        sv.append(genome_interval(options.chrom[i], options.start[i], options.end[i]))
+    sv = [
+        genome_interval(strip_chr(chrom), start, end)
+        for chrom, start, end in zip(options.chrom, options.start, options.end)
+    ]
     # set up plot
-    plot_height, plot_width, window, ranges = set_plot_dimensions(
-        sv,
-        options.sv_type,
-        options.plot_height,
-        options.plot_width,
-        options.bams,
-        options.reference,
-        options.annotation_files,
-        options.transcript_file,
-        options.window,
-        options.zoom,
-    )
-
-    marker_size = options.marker_size
+    plot_height, plot_width, window, ranges = set_plot_dimensions(sv, options)
 
     # read alignment data
-    read_data, max_coverage = get_read_data(
-        ranges,
-        options.bams,
-        options.reference,
-        options.separate_mqual,
-        options.include_mqual,
-        options.coverage_only,
-        options.long_read,
-        options.min_event_size,
-        options.same_yaxis_scales,
-        options.max_depth,
-        options.z,
-        options.ignore_hp,
-    )
+    read_data, max_coverage = get_read_data(ranges, options)
+    if options.max_coverage:
+        max_coverage = options.max_coverage
 
     # The figure is built without pyplot, so no global matplotlib state
     # (backend, current figure, rcParams) is touched: safe to call from an
@@ -3743,15 +3828,7 @@ def create_figure(options):
         fig = Figure(figsize=(plot_width, plot_height))
 
         # set up grid organizer
-        grid, num_ax = create_gridspec(
-            options.bams,
-            options.transcript_file,
-            options.annotation_files,
-            options.sv_type,
-            read_data,
-            options.annotation_scalar,
-            fig=fig,
-        )
+        grid, num_ax = create_gridspec(options, read_data, fig=fig)
         current_axis_idx = 0
 
         # plot variant on top
@@ -3765,61 +3842,20 @@ def create_figure(options):
                 options.start_ci,
                 options.end_ci,
             )
-        if options.max_coverage:
-            max_coverage = options.max_coverage
 
         # Plot each sample
         current_axis_idx = plot_samples(
-            ranges,
-            read_data,
-            grid,
-            current_axis_idx,
-            num_ax,
-            options.bams,
-            options.chrom,
-            options.coverage_tracktype,
-            options.titles,
-            options.same_yaxis_scales,
-            options.xaxis_label_fontsize,
-            options.yaxis_label_fontsize,
-            options.annotation_files,
-            options.transcript_file,
-            options.max_coverage_points,
-            max_coverage,
-            marker_size,
-            options.coverage_only,
-            options.jitter,
-            sv=sv,
-            sv_type=options.sv_type,
-            coverage_trend_min_size=options.coverage_trend_min_size,
+            ranges, read_data, grid, current_axis_idx, num_ax, options, max_coverage, sv=sv
         )
-        # plot legend
-        plot_legend(fig, options.legend_fontsize, marker_size)
+        plot_legend(fig, options.legend_fontsize, options.marker_size)
 
         # Plot annotation files
         if options.annotation_files:
-            plot_annotations(
-                options.annotation_files,
-                options.annotation_filenames,
-                ranges,
-                options.hide_annotation_labels,
-                options.annotation_fontsize,
-                grid,
-                current_axis_idx,
-                options.annotation_scalar,
-            )
+            plot_annotations(options, ranges, grid, current_axis_idx)
 
         # Plot sorted/bgziped/tabixed transcript file
         if options.transcript_file:
-            plot_transcript(
-                options.transcript_file,
-                options.transcript_filename,
-                ranges,
-                grid,
-                options.annotation_fontsize,
-                options.xaxis_label_fontsize,
-                options.annotation_scalar,
-            )
+            plot_transcript(options, ranges, grid)
 
         fig.tight_layout(pad=0.8, h_pad=0.1, w_pad=0.1)
 
@@ -3827,13 +3863,8 @@ def create_figure(options):
 
 
 def default_options():
-    """A namespace holding the default of every `samplot plot` argument"""
-    parser = add_plot(argparse.ArgumentParser().add_subparsers())
-    options = argparse.Namespace()
-    for action in parser._actions:
-        if action.dest not in ("help", "func"):
-            setattr(options, action.dest, action.default)
-    return options
+    """A PlotOptions holding the default of every setting"""
+    return PlotOptions()
 
 
 def plot_region(chrom, start, end, bams, sv_type=None, output_file=None, **kwargs):
@@ -3855,9 +3886,9 @@ def plot_region(chrom, start, end, bams, sv_type=None, output_file=None, **kwarg
         as given with no variant bar or padding.
     output_file: if given the figure is also saved there (format from the
         extension, resolution from dpi=...).
-    kwargs: any other `samplot plot` option by its long name, eg
-        window=1000, coverage_only=True, transcript_file="genes.gff3.gz",
-        max_coverage=60. See `samplot plot -h` or default_options().
+    kwargs: any other field of PlotOptions (the long names of the
+        `samplot plot` options), eg window=1000, coverage_only=True,
+        transcript_file="genes.gff3.gz", max_coverage=60.
 
     No global matplotlib state is used, so this can be called from a web app
     or notebook. To get image bytes rather than a file:
@@ -3868,18 +3899,11 @@ def plot_region(chrom, start, end, bams, sv_type=None, output_file=None, **kwarg
     Raises SamplotError if the plot can't be made and TypeError for an
     unknown option.
     """
-    options = default_options()
-    unknown = [k for k in kwargs if not hasattr(options, k)]
-    if unknown:
-        raise TypeError(
-            "Unknown samplot option(s): {}".format(", ".join(sorted(unknown)))
-        )
 
     def as_list(value):
         return list(value) if isinstance(value, (list, tuple)) else [value]
 
-    for key, value in kwargs.items():
-        setattr(options, key, value)
+    options = PlotOptions(**kwargs)
     options.chrom = [str(c) for c in as_list(chrom)]
     options.start = [int(s) for s in as_list(start)]
     options.end = [int(e) for e in as_list(end)]
@@ -3903,6 +3927,7 @@ def plot(parser, options, extra_args=None):
     To support translocations, the SVs are specified as an array of 
     genome_interval. For now we let that array be size 1 or 2.
     """
+    options = PlotOptions.from_namespace(options)
     if options.debug:
         logger.setLevel(logging.DEBUG)
     

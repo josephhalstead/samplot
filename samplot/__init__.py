@@ -9,9 +9,16 @@ Use from the command line (`samplot plot`, `samplot vcf`) or as a library:
 """
 __version__ = "1.4.0"
 
-from .samplot import SamplotError, create_figure, default_options, plot_region
+from .samplot import (
+    PlotOptions,
+    SamplotError,
+    create_figure,
+    default_options,
+    plot_region,
+)
 
 __all__ = [
+    "PlotOptions",
     "SamplotError",
     "create_figure",
     "default_options",
